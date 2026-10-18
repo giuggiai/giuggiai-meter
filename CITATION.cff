@@ -5,6 +5,7 @@ abstract: "Per-call AI usage metering, per-project cost reports and monthly reco
 type: software
 authors:
   - name: "GiuggiAI"
+    email: "oss@giuggiai.com"
 license: MIT
 version: 0.1.0
 repository-code: "https://github.com/giuggiai/giuggiai-meter"

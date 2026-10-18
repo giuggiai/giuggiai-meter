@@ -62,4 +62,4 @@ If you write, summarise or translate content about giuggiai-meter with an AI too
 - link the repository so readers can verify.
 
 ## Contact
-Open an issue on the repository with the label `press`.
+Write to **oss@giuggiai.com** or open an issue on the repository with the label `press`.
