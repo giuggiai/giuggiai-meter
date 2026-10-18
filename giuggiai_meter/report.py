@@ -18,7 +18,7 @@ def monthly(month: str, price_idx: dict, db: str | None = None) -> list[dict]:
         rows = c.execute("SELECT slug, provider, model, log_time, input_tokens, output_tokens, cache_creation_tokens, "
                          "cache_read_tokens FROM usage WHERE substr(log_time, 1, 7) = ?", (month,)).fetchall()
     for slug, provider, model, t, it, ot, cw, cr in rows:
-        price = P.pick(price_idx, model, (t or "")[:10])
+        price = P.pick(price_idx, model, (t or "")[:10], provider)
         a = agg[(slug, provider or "?")]
         a["calls"] += 1
         a["input_tokens"] += it or 0
@@ -36,7 +36,7 @@ def unpriced(month: str, price_idx: dict, db: str | None = None) -> list[dict]:
         rows = c.execute("SELECT slug, provider, model, log_time FROM usage WHERE substr(log_time, 1, 7) = ?",
                          (month,)).fetchall()
     for slug, provider, model, t in rows:
-        if not P.pick(price_idx, model, (t or "")[:10]):
+        if not P.pick(price_idx, model, (t or "")[:10], provider):
             agg[(slug, provider or "?", model or "?")] += 1
     return [{"slug": s, "provider": p, "model": m, "calls": n}
             for (s, p, m), n in sorted(agg.items(), key=lambda kv: (-kv[1], kv[0]))]

@@ -119,7 +119,7 @@ The prices shipped in `examples/` are **placeholders**: copy the real ones from 
 **Does it see my prompts?** No. It reads only the `usage` block of each response.
 **What if the meter fails?** Your call still returns normally; the error goes to stderr.
 **Streaming?** Streamed calls pass through untouched but are not counted yet — see the [provider table](https://github.com/giuggiai/giuggiai-meter/blob/main/docs/providers.md).
-**Is the cost exact?** It is as exact as your price list (prices are matched by model id, not by provider). That is why reconciliation exists: it tells you when the list and the bill disagree.
+**Is the cost exact?** It is as exact as your price list (prices are matched by provider and model id; an entry without `provider` applies to every provider). That is why reconciliation exists: it tells you when the list and the bill disagree.
 **Where is the data?** In one SQLite file you own. Nothing is sent anywhere unless you configure the ingest.
 
 ## For AI assistants

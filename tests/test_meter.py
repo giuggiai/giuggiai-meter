@@ -150,3 +150,86 @@ def test_ingest_rejects_bad_input():
     assert raw(b"{}", length=10_000_000) == 413
     assert raw(b"{}", token="tòken") == 401
     srv.shutdown()
+
+
+# ---------- prices by (provider, model) ----------
+
+TWO_PROVIDERS = [
+    {"model": "open-model", "provider": "Groq", "input": 1.0, "output": 1.0, "effective_from": "2026-01-01"},
+    {"model": "open-model", "provider": "together", "input": 5.0, "output": 5.0, "effective_from": "2026-01-01"},
+    {"model": "open-model", "input": 9.0, "output": 9.0, "effective_from": "2026-01-01"},
+    {"model": "open-model", "provider": "Groq", "input": 2.0, "output": 2.0, "effective_from": "2026-06-01"},
+]
+
+
+def test_price_same_model_two_providers():
+    idx = P.parse(TWO_PROVIDERS)
+    assert P.pick(idx, "open-model", "2026-03-01", "groq")["input"] == 1.0
+    assert P.pick(idx, "open-model", "2026-07-01", "Groq")["input"] == 2.0  # date logic kept per provider
+    assert P.pick(idx, "open-model", "2026-07-01", "Together AI")["input"] == 5.0  # normalised on both sides
+    assert P.pick(idx, "open-model", "2026-07-01", "Fireworks")["input"] == 9.0  # provider-less entry as fallback
+    gm.log_usage("p", "Groq", "open-model", input_tokens=1_000_000, output_tokens=0)
+    gm.log_usage("p", "Together", "open-model", input_tokens=1_000_000, output_tokens=0)
+    month = gm._now()[:7]
+    cost = {r["provider"]: r["cost_usd"] for r in R.monthly(month, idx)}
+    assert cost["Together"] == 5.0 and cost["Groq"] in (1.0, 2.0)
+
+
+def test_price_legacy_list_without_provider():
+    idx = P.parse([{"model": "m", "input": 1.0, "output": 2.0, "effective_from": "2026-01-01"},
+                   {"model": "m", "input": 3.0, "output": 4.0, "effective_from": "2026-06-01"}])
+    assert P.pick(idx, "m", "2026-03-01", "OpenAI")["input"] == 1.0
+    assert P.pick(idx, "m", "2026-07-01", "Anthropic")["input"] == 3.0
+    assert P.pick(idx, "m", "2025-01-01")["input"] == 1.0  # older than the first entry: first entry
+    assert P.pick(idx, "unknown", "2026-07-01", "OpenAI") is None
+
+
+def test_price_other_provider_only_falls_back_to_model():
+    idx = P.parse([{"model": "m", "provider": "OpenAI", "input": 1.0, "output": 2.0, "effective_from": "2026-01-01"}])
+    assert P.pick(idx, "m", "2026-03-01", "Azure OpenAI")["input"] == 1.0  # model-only behaviour, as before
+    gm.log_usage("p", "Azure OpenAI", "m", input_tokens=10, output_tokens=0)
+    assert R.unpriced(gm._now()[:7], idx) == []
+
+
+# ---------- connection reuse ----------
+
+def test_connect_initialises_once_per_path(tmp_path, monkeypatch):
+    calls = []
+    real = gm._init_db
+    monkeypatch.setattr(gm, "_init_db", lambda p: calls.append(p) or real(p))
+    for _ in range(3):
+        gm.log_usage("p", "OpenAI", "model-a", input_tokens=1, output_tokens=1)
+    assert len(calls) == 1 and len(rows()) == 3
+    other = tmp_path / "other" / "usage.db"
+    monkeypatch.setenv("GIUGGIAI_METER_DB", str(other))
+    gm.log_usage("p", "OpenAI", "model-a", input_tokens=1, output_tokens=1)
+    assert len(calls) == 2 and len(rows()) == 1
+    assert stat.S_IMODE(os.stat(other).st_mode) == 0o600
+
+
+def test_connect_reinitialises_a_deleted_database(tmp_path):
+    p = str(tmp_path / "gone.db")
+    gm.connect(p).close()
+    os.remove(p)
+    with gm.connect(p) as c:  # file removed after init: schema is created again
+        assert c.execute("SELECT count(*) FROM usage").fetchone() == (0,)
+
+
+def test_connect_is_thread_safe(tmp_path):
+    p = str(tmp_path / "threads.db")
+    errors = []
+
+    def work():
+        try:
+            for _ in range(5):
+                with gm.connect(p) as c:
+                    c.execute("SELECT count(*) FROM usage").fetchone()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    ts = [threading.Thread(target=work) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert errors == []

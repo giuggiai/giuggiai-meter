@@ -7,7 +7,10 @@ File format (see examples/prices.example.json):
 
 The file may also be an object {"_note": "...", "prices": [ ...entries... ]}; keys starting with "_" are comments.
 The entry used for a call is the latest one with effective_from <= the call date (calls older than the
-first entry use the first entry). Prices are looked up by model id only, not by provider.
+first entry use the first entry). Prices are looked up by (provider, model): when the call's provider is known,
+entries whose "provider" matches it (compared with providers.normalize) win over entries without a provider or
+with another provider; when no entry matches the provider, entries without a provider are used, and then any
+entry for the model (model-only lookup, so price lists without "provider" keep working unchanged).
 `python -m giuggiai_meter init` copies an example list (EXAMPLE prices, not real ones) to prices_path().
 """
 from __future__ import annotations
@@ -17,6 +20,8 @@ import os
 import re
 from importlib import resources
 from pathlib import Path
+
+from .providers import normalize as _norm_provider
 
 
 def prices_path() -> str:
@@ -59,9 +64,21 @@ def norm_model(m: str | None) -> str | None:
     return re.sub(r"-\d{4}-\d{2}-\d{2}$", "", m)
 
 
-def pick(idx: dict, model: str | None, date_str: str) -> dict | None:
-    """Price entry valid on date_str (YYYY-MM-DD) for model, or None when the model is not in the list."""
-    cands = idx.get(model) or idx.get(norm_model(model)) or []
+def _for_provider(cands: list[dict], provider: str | None) -> list[dict]:
+    """Entries of cands for provider: provider-specific ones first, then provider-less ones, then all of them."""
+    if not provider:
+        return cands
+    want = _norm_provider(provider)
+    same = [r for r in cands if r.get("provider") and _norm_provider(r["provider"]) == want]
+    if same:
+        return same
+    return [r for r in cands if not r.get("provider")] or cands
+
+
+def pick(idx: dict, model: str | None, date_str: str, provider: str | None = None) -> dict | None:
+    """Price entry valid on date_str (YYYY-MM-DD) for model (and provider, when given), or None when the model
+    is not in the list. With a provider, an entry for that provider wins over entries for other or no provider."""
+    cands = _for_provider(idx.get(model) or idx.get(norm_model(model)) or [], provider)
     chosen = None
     for r in cands:
         if r["effective_from"] <= date_str:

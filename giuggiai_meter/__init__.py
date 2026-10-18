@@ -34,7 +34,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["connect", "db_path", "log_anthropic", "log_bedrock", "log_cohere", "log_deepseek", "log_gemini", "log_grok",
            "log_mistral", "log_ollama", "log_openai", "log_perplexity", "log_qwen", "log_response", "log_usage", "wrap"]
 
@@ -69,9 +69,26 @@ def db_path() -> str:
     return os.environ.get("GIUGGIAI_METER_DB") or str(Path.home() / ".local/share/giuggiai-meter/usage.db")
 
 
+_READY: set[tuple[int, str]] = set()  # (pid, absolute path) of databases already initialised in this process
+_READY_LOCK = threading.Lock()
+
+
 def connect(path: str | None = None) -> sqlite3.Connection:
-    """Open (and create if needed) the usage database. The file is made readable by its owner only."""
+    """Open (and create if needed) the usage database. The file is made readable by its owner only.
+
+    The heavy setup (directory, owner-only files, WAL, schema) runs once per path per process; later calls only
+    open a new connection (sqlite3 connections are not shared between threads)."""
     p = path or db_path()
+    key = (os.getpid(), os.path.abspath(p))
+    if key in _READY and os.path.exists(p):
+        return sqlite3.connect(p, timeout=10)
+    with _READY_LOCK:
+        c = _init_db(p)
+        _READY.add(key)
+    return c
+
+
+def _init_db(p: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(os.path.abspath(p)), mode=0o700, exist_ok=True)
     # create the database, -wal and -shm files as owner-only before SQLite opens them (no process-wide umask change)
     for f in (p, p + "-wal", p + "-shm"):

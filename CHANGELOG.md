@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-10-19
+
+### Added
+- Prices by provider: `prices.pick(idx, model, date, provider=None)` prefers an entry whose `provider` matches the call's provider (spellings normalised with `providers.normalize`), so the same model id served by two providers can have two prices. Lists without `provider` work unchanged.
+
+### Changed
+- `report.monthly`, `report.unpriced` and reconciliation now pass each row's provider to the price lookup. **Note:** if your price list has several entries with different `provider` values for the same model, each call now gets the price of its own provider (before, the most recent entry by date won).
+- `connect()` initialises each database (directory, owner-only files, WAL, schema) once per path per process instead of on every insert; it still returns a new connection on each call.
+- Async clients: the usage of an awaited call is recorded in a worker thread (`asyncio.to_thread`), so SQLite or HTTP I/O no longer blocks the event loop.
+
+### Fixed
+- Docs (`README.md`, `llms.txt`, `docs/providers.md`): describe pricing by (provider, model) instead of model id only.
+
 ## [0.1.0] - 2026-10-19
 First public release.
 

@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -166,6 +167,45 @@ def test_wrap_async_client():
     resp = asyncio.run(client.messages.create(model="model-b"))
     assert resp.id == "msg_async"
     assert rows() == [("async-bot", "Anthropic", "model-b", 11, 3, 0)]
+
+
+def test_wrap_async_records_off_the_event_loop(monkeypatch):
+    raw = AsyncAnthropic()
+    sentinel = SimpleNamespace(id="msg_same", type="message", model="model-b",
+                               usage=SimpleNamespace(input_tokens=5, output_tokens=2))
+
+    async def create(**kw):
+        return sentinel
+
+    raw.messages.create = create
+    seen = {}
+    real = gm.log_response
+
+    def spy(*a, **kw):
+        seen["thread"] = threading.get_ident()
+        return real(*a, **kw)
+
+    monkeypatch.setattr(gm, "log_response", spy)
+
+    async def main():
+        seen["loop"] = threading.get_ident()
+        return await gm.wrap(raw, project="async-bot").messages.create(model="model-b")
+
+    assert asyncio.run(main()) is sentinel  # the very same object, unchanged
+    assert seen["thread"] != seen["loop"]  # recording ran in a worker thread
+    assert rows() == [("async-bot", "Anthropic", "model-b", 5, 2, 0)]
+
+
+def test_wrap_async_recording_failure_never_propagates(monkeypatch, capsys):
+    import giuggiai_meter._wrap as W
+
+    async def boom(*a, **kw):
+        raise RuntimeError("no thread")
+
+    monkeypatch.setattr(W.asyncio, "to_thread", boom)
+    resp = asyncio.run(gm.wrap(AsyncAnthropic(), project="async-bot").messages.create(model="model-b"))
+    assert resp.id == "msg_async" and rows() == []
+    assert "async logging failed" in capsys.readouterr().err
 
 
 def test_wrap_is_idempotent_and_keeps_copies_metered():

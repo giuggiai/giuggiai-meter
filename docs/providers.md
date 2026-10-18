@@ -29,6 +29,12 @@ For those, log by hand: `gm.log_usage(project, provider, model, input_tokens=...
 `input_tokens` are the **uncached** input tokens; cache reads and cache writes are stored in their own columns.
 Providers that report a total including the cache (OpenAI-style, Gemini, Responses, DashScope) are converted, so each token is priced exactly once.
 
+## Prices per provider
+
+Price entries are matched by provider and model id. An entry with `"provider"` applies to calls of that provider only
+(spellings are normalised: `"openai"` matches `OpenAI`); an entry without `"provider"` applies to every provider.
+So the same open model served by two providers can have two prices; price lists without `"provider"` work unchanged.
+
 ## Add a provider
 
 Edit the tables at the top of `giuggiai_meter/providers.py` (`ALIASES`, `HOSTS`, `CLIENT_HINTS`, `MODEL_PREFIXES`), add a test in `tests/test_providers.py`, open a pull request.

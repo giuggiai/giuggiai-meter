@@ -9,6 +9,7 @@ usage from the response by its shape (see log_response).
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import functools
 import inspect
@@ -82,7 +83,10 @@ def _metered(fn, meter: dict):
 
 async def _await_and_record(awaitable, meter: dict, kwargs: dict):
     resp = await awaitable
-    _record(meter, resp, kwargs)
+    try:  # SQLite / HTTP I/O runs in a worker thread, never blocking the event loop
+        await asyncio.to_thread(_record, meter, resp, kwargs)
+    except Exception as e:  # noqa: BLE001 - never break the caller
+        _warn("wrap: async logging failed", e)
     return resp
 
 
