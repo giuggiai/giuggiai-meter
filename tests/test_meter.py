@@ -58,7 +58,7 @@ def test_extractors():
                                                         "prompt_tokens_details": {"cached_tokens": 10}}}
     gm.log_anthropic("p1", a)
     gm.log_openai("p2", o)
-    assert sorted(rows()) == [("p1", "Anthropic", "model-b", 100, 20, 30), ("p2", "OpenAI", "model-a", 50, 7, 10)]
+    assert sorted(rows()) == [("p1", "Anthropic", "model-b", 100, 20, 30), ("p2", "OpenAI", "model-a", 40, 7, 10)]  # input = uncached
 
 
 def test_price_by_date_and_model_normalisation():

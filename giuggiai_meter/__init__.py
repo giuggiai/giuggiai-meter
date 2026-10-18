@@ -1,9 +1,16 @@
 """giuggiai-meter: per-call LLM usage logging, per-project cost reports and monthly reconciliation.
 
-Log one line after each model call:
+Wrap the client once and every call is recorded (Anthropic, OpenAI and every OpenAI-compatible API,
+Google Gemini, Mistral, Cohere, Amazon Bedrock, Ollama):
 
     import giuggiai_meter as gm
+    client = gm.wrap(Anthropic(), project="my-project")    # or gm.wrap(OpenAI(...), project=..., provider="DeepSeek")
+    client.messages.create(...)                             # recorded, response unchanged
+
+Or log one line after each model call; log_response recognises the response by its shape:
+
     resp = client.messages.create(...)
+    gm.log_response("my-project", resp)                    # any supported SDK object or raw JSON dict
     gm.log_anthropic("my-project", resp)          # Anthropic Messages API
     gm.log_openai("my-project", resp)             # OpenAI-compatible APIs (OpenAI, DeepSeek, Perplexity, ...)
 
@@ -26,11 +33,10 @@ import uuid
 from pathlib import Path
 
 __version__ = "0.1.0"
-__all__ = ["connect", "db_path", "log_anthropic", "log_deepseek", "log_openai", "log_perplexity", "log_usage"]
+__all__ = ["connect", "db_path", "log_anthropic", "log_bedrock", "log_cohere", "log_deepseek", "log_gemini", "log_grok",
+           "log_mistral", "log_ollama", "log_openai", "log_perplexity", "log_qwen", "log_response", "log_usage", "wrap"]
 
 _LOCK = threading.Lock()
-_PROVIDERS = {"anthropic": "Anthropic", "openai": "OpenAI", "deepseek": "DeepSeek", "perplexity": "Perplexity",
-              "mistral": "Mistral", "google": "Google"}
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS usage(
@@ -83,9 +89,8 @@ def connect(path: str | None = None) -> sqlite3.Connection:
 
 
 def _norm_provider(p):
-    if not p:
-        return None
-    return _PROVIDERS.get(str(p).strip().lower(), str(p).strip())
+    from .providers import normalize
+    return normalize(p)
 
 
 def _now() -> str:
@@ -173,13 +178,15 @@ def log_anthropic(slug, response, model=None, workspace=None):
 
 
 def log_openai(slug, response, provider="OpenAI", model=None, workspace=None):
-    """Read `usage` from an OpenAI-compatible response (OpenAI, DeepSeek, Perplexity, ...) and record it. Never raises."""
+    """Read `usage` from an OpenAI-compatible response (OpenAI, DeepSeek, Perplexity, ...) and record it. Never raises.
+    Works with Chat Completions (prompt/completion tokens) and the Responses API (input/output tokens)."""
     try:
         u = _g(response, "usage", default={}) or {}
-        details = _g(u, "prompt_tokens_details", default={}) or {}
+        details = _g(u, "prompt_tokens_details", "input_tokens_details", default={}) or {}
         cached = _g(details, "cached_tokens", default=0) or _g(u, "prompt_cache_hit_tokens", default=0)
         return log_usage(slug, provider=provider, model=model or _g(response, "model", default=None),
-                         input_tokens=_g(u, "prompt_tokens", "input_tokens"),
+                         # convention: input_tokens = uncached input (OpenAI-style totals include the cached part)
+                         input_tokens=max(0, int(_g(u, "prompt_tokens", "input_tokens") or 0) - int(cached or 0)),
                          output_tokens=_g(u, "completion_tokens", "output_tokens"),
                          cache_read_tokens=cached, request_id=_rid(response), workspace=workspace)
     except Exception as e:  # noqa: BLE001 - never break the caller
@@ -193,3 +200,68 @@ def log_deepseek(slug, response, model=None, workspace=None):
 
 def log_perplexity(slug, response, model=None, workspace=None):
     return log_openai(slug, response, provider="Perplexity", model=model, workspace=workspace)
+
+
+def log_response(project, response, provider=None, model=None, workspace=None, fallback_model=None):
+    """Record any supported LLM response, SDK object or raw JSON dict, recognised by its shape. Never raises.
+
+    Shapes: OpenAI Chat Completions and every OpenAI-compatible API (prompt/completion tokens), OpenAI Responses API,
+    Anthropic Messages, Google Gemini (usage_metadata, also camelCase JSON), Cohere (billed_units), Amazon Bedrock
+    Converse (inputTokens/outputTokens), Ollama (prompt_eval_count/eval_count), Alibaba DashScope native.
+    `provider`: who bills the call; when omitted it comes from the shape or the model id (see providers.py).
+    `model` overrides the model in the response; `fallback_model` is used only when the response names none.
+    Returns the request_id, or None when nothing was recorded (no usage in the response, or an error)."""
+    try:
+        from ._usage import extract, resolve_provider
+
+        u = extract(response)
+        if u is None:
+            sys.stderr.write("[giuggiai_meter] log_response: no token usage found in the response, nothing recorded\n")
+            return None
+        mdl = model or u["model"] or fallback_model
+        rid = "gm-" + (str(u["id"]) if u["id"] else uuid.uuid4().hex)
+        return log_usage(project, provider=resolve_provider(provider, mdl, u["shape"]), model=mdl,
+                         input_tokens=u["input_tokens"], output_tokens=u["output_tokens"],
+                         cache_creation_tokens=u["cache_creation_tokens"], cache_read_tokens=u["cache_read_tokens"],
+                         request_id=rid, workspace=workspace)
+    except Exception as e:  # noqa: BLE001 - never break the caller
+        sys.stderr.write(f"[giuggiai_meter] log_response error: {e}\n")
+        return None
+
+
+def log_gemini(project, response, model=None, workspace=None):
+    """Google Gemini (google-genai / google-generativeai objects, or REST JSON)."""
+    return log_response(project, response, provider="Google", model=model, workspace=workspace)
+
+
+def log_grok(project, response, model=None, workspace=None):
+    """xAI Grok (OpenAI-compatible API)."""
+    return log_response(project, response, provider="xAI", model=model, workspace=workspace)
+
+
+def log_qwen(project, response, model=None, workspace=None):
+    """Alibaba Qwen: DashScope native or OpenAI-compatible mode."""
+    return log_response(project, response, provider="Alibaba Qwen", model=model, workspace=workspace)
+
+
+def log_mistral(project, response, model=None, workspace=None):
+    """Mistral (mistralai SDK `chat.complete`, or OpenAI-compatible JSON)."""
+    return log_response(project, response, provider="Mistral", model=model, workspace=workspace)
+
+
+def log_cohere(project, response, model=None, workspace=None):
+    """Cohere chat (v1 meta.billed_units or v2 usage.billed_units)."""
+    return log_response(project, response, provider="Cohere", model=model, workspace=workspace)
+
+
+def log_bedrock(project, response, model=None, workspace=None):
+    """Amazon Bedrock Converse API (boto3 `converse`); pass model= (the Converse response does not name it)."""
+    return log_response(project, response, provider="AWS Bedrock", model=model, workspace=workspace)
+
+
+def log_ollama(project, response, model=None, workspace=None):
+    """Ollama native API (`chat` / `generate`)."""
+    return log_response(project, response, provider="Ollama", model=model, workspace=workspace)
+
+
+from ._wrap import wrap  # imported last: it needs the log_* functions above

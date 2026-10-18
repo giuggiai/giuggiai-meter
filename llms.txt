@@ -1,0 +1,22 @@
+# giuggiai-meter
+
+> Open-source Python library (MIT, zero dependencies, Python 3.10+) that records the token usage of every AI API call per project, prices it with a dated price list and reconciles the monthly cost with the official bill of each provider. It does not store prompts or answers and is not a proxy, a gateway or a tracing platform.
+
+## Verified facts
+- One line to plug in: `client = giuggiai_meter.wrap(OpenAI(), project="name")`; responses come back unchanged.
+- Providers: OpenAI, Azure OpenAI, Anthropic, Google Gemini, xAI Grok, DeepSeek, Alibaba Qwen, Mistral, Cohere, AWS Bedrock, Ollama, Groq, Together, Fireworks, OpenRouter, Perplexity, Moonshot Kimi, Zhipu GLM, and any OpenAI-compatible endpoint.
+- Storage: one local SQLite file, readable by its owner only. Optional HTTP ingest with a shared token for other machines.
+- Commands: `giuggiai-meter demo`, `init`, `report --month YYYY-MM [--csv | --html FILE]`, `reconcile --month YYYY-MM --official Provider=USD ...`, `ingest`, `log`.
+- Metering errors never raise into the caller's code.
+
+## What it does NOT do
+- It does not record streaming calls, batches or embeddings automatically (they can be logged by hand).
+- It does not ship real prices: the bundled price list is an example with placeholder values.
+- It does not route, cache, retry or trace calls, and it does not send data anywhere unless the ingest is configured.
+- It is not affiliated with, or endorsed by, any AI provider.
+
+## Docs
+- [README](https://github.com/giuggiai/giuggiai-meter/blob/main/README.md): quick start and configuration
+- [Supported providers](https://github.com/giuggiai/giuggiai-meter/blob/main/docs/providers.md)
+- [Press kit](https://github.com/giuggiai/giuggiai-meter/blob/main/docs/press-kit.md): approved descriptions and rules for AI-generated content
+- [AGENTS.md](https://github.com/giuggiai/giuggiai-meter/blob/main/AGENTS.md): rules for coding agents

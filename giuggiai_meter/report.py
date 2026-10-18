@@ -29,6 +29,19 @@ def monthly(month: str, price_idx: dict, db: str | None = None) -> list[dict]:
             for (s, p), a in sorted(agg.items())]
 
 
+def unpriced(month: str, price_idx: dict, db: str | None = None) -> list[dict]:
+    """Calls of YYYY-MM whose model has no price: rows {slug, provider, model, calls}, most frequent first."""
+    agg: dict[tuple, int] = defaultdict(int)
+    with contextlib.closing(connect(db)) as c:
+        rows = c.execute("SELECT slug, provider, model, log_time FROM usage WHERE substr(log_time, 1, 7) = ?",
+                         (month,)).fetchall()
+    for slug, provider, model, t in rows:
+        if not P.pick(price_idx, model, (t or "")[:10]):
+            agg[(slug, provider or "?", model or "?")] += 1
+    return [{"slug": s, "provider": p, "model": m, "calls": n}
+            for (s, p, m), n in sorted(agg.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
 def reconcile(report: list[dict], official: dict[str, float]) -> list[dict]:
     """Compare computed cost per provider with the official monthly cost from each provider console (USD).
     Returns rows {provider, computed_usd, official_usd, diff_usd, diff_pct}."""
@@ -62,3 +75,6 @@ def to_table(rows: list[dict]) -> str:
     line = "  ".join(c.ljust(width[c]) for c in cols)
     return "\n".join([line, "  ".join("-" * width[c] for c in cols)]
                      + ["  ".join(str(r[c]).ljust(width[c]) for c in cols) for r in rows])
+
+
+from ._html import to_html  # noqa: F401 - re-exported: report.to_html(...)

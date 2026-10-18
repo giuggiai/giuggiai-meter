@@ -1,4 +1,16 @@
-[
-  {"model": "example-small", "provider": "OpenAI", "input": 0.15, "output": 0.60, "cache_read": 0.075, "effective_from": "2026-01-01"},
-  {"model": "example-large", "provider": "Anthropic", "input": 3.00, "output": 15.00, "cache_write": 3.75, "cache_read": 0.30, "effective_from": "2026-01-01"}
-]
+{
+  "_note": "EXAMPLE price list: every model name and price below is a made-up placeholder, NOT a real price. Replace them with the real prices (USD per million tokens) copied from each provider's pricing page, using the model ids your code sends, with the date each price applies from. When a price changes, add a new entry with a new effective_from and keep the old one: reports use the entry valid on the call date.",
+  "prices": [
+    {"model": "example-small", "provider": "OpenAI", "input": 0.15, "output": 0.6, "cache_read": 0.075, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-large", "provider": "Anthropic", "input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-chat", "provider": "DeepSeek", "input": 0.5, "output": 1.0, "cache_read": 0.05, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-gemini", "provider": "Google", "input": 1.0, "output": 4.0, "cache_read": 0.25, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-grok", "provider": "xAI", "input": 2.0, "output": 10.0, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-qwen", "provider": "Alibaba Qwen", "input": 0.5, "output": 2.0, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-mistral", "provider": "Mistral", "input": 1.0, "output": 3.0, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-command", "provider": "Cohere", "input": 2.0, "output": 8.0, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-bedrock", "provider": "AWS Bedrock", "input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-groq", "provider": "Groq", "input": 0.5, "output": 1.0, "effective_from": "2026-01-01", "_example": true},
+    {"model": "example-local", "provider": "Ollama", "input": 0.0, "output": 0.0, "effective_from": "2026-01-01", "_example": true}
+  ]
+}

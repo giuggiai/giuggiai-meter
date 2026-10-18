@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>giuggiai-meter — AI cost per project, reconciled with the bill</title>
+<meta name="description" content="Open-source Python library: one line of code records every AI API call per project (OpenAI, Anthropic, Gemini, Grok, DeepSeek, Qwen and more) and reconciles the monthly cost with the provider bills. Zero dependencies, MIT.">
+<link rel="canonical" href="https://giuggiai.github.io/giuggiai-meter/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="giuggiai-meter — Every AI call counted. Every dollar reconciled.">
+<meta property="og:description" content="Cost per project for every AI provider, checked against the real bill. One line of code, zero dependencies.">
+<meta property="og:url" content="https://giuggiai.github.io/giuggiai-meter/">
+<meta property="og:image" content="https://giuggiai.github.io/giuggiai-meter/assets/cover.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="giuggiai-meter — Every AI call counted. Every dollar reconciled.">
+<meta name="twitter:description" content="Cost per project for every AI provider, checked against the real bill.">
+<meta name="twitter:image" content="https://giuggiai.github.io/giuggiai-meter/assets/cover.png">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareSourceCode","name":"giuggiai-meter",
+ "description":"Per-call AI usage metering, per-project cost reports and monthly reconciliation with provider bills.",
+ "codeRepository":"https://github.com/giuggiai/giuggiai-meter","programmingLanguage":"Python",
+ "license":"https://opensource.org/licenses/MIT","author":{"@type":"Organization","name":"GiuggiAI"},
+ "keywords":"LLM cost, AI cost per project, token usage, OpenAI, Anthropic, Gemini, Grok, DeepSeek, Qwen"}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#15171C;--paper:#FBFAF6;--ground:#EDEAE1;--line:#E2E0D8;--muted:#4A4E59;--hl:#F2C94C;--ok:#2F6B4F}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:'Bricolage Grotesque',system-ui,sans-serif;line-height:1.5}
+main{max-width:1040px;margin:0 auto;padding:32px 16px 64px}
+header{display:flex;align-items:center;gap:12px;font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:18px}
+h1{font-size:clamp(36px,6vw,64px);line-height:1.03;letter-spacing:-.03em;margin:32px 0 16px;font-weight:800}
+h1 span{background:linear-gradient(transparent 58%,var(--hl) 58%)}
+h2{font-size:28px;margin:48px 0 12px;letter-spacing:-.02em}
+p.lead{font-size:20px;color:var(--muted);max-width:720px}
+pre,code{font-family:'IBM Plex Mono',monospace}
+pre{background:var(--ink);color:var(--paper);padding:16px 18px;border-radius:12px;overflow-x:auto;font-size:14px}
+img{max-width:100%;height:auto;border-radius:16px;border:1px solid var(--line);background:var(--paper)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px}
+.card b{display:block;margin-bottom:4px}
+a{color:var(--ok)}
+.cta{display:inline-block;background:var(--ink);color:var(--paper);padding:12px 18px;border-radius:10px;text-decoration:none;font-family:'IBM Plex Mono',monospace}
+footer{margin-top:56px;color:var(--muted);font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<header><img src="assets/logo.svg" alt="GiuggiAI logo" width="30" height="34" style="border:0;background:none;border-radius:0">giuggiai-meter</header>
+<h1>Every AI call counted.<br><span>Every dollar reconciled.</span></h1>
+<p class="lead">Know what each project really spends on AI — and check it against the bill. One line of code, every major provider, zero dependencies.</p>
+<p><a class="cta" href="https://github.com/giuggiai/giuggiai-meter">View on GitHub</a></p>
+
+<h2>Why</h2>
+<div class="grid">
+<div class="card"><b>Cost per project</b>Every call tagged with the project that made it.</div>
+<div class="card"><b>Closed against the bill</b>Computed vs official total, in USD and %.</div>
+<div class="card"><b>One line to plug in</b>Wrap your client. Responses unchanged.</div>
+<div class="card"><b>Tokens, never text</b>Prompts and answers are never stored.</div>
+</div>
+
+<h2>Try it in 60 seconds</h2>
+<pre>pip install giuggiai-meter
+giuggiai-meter demo</pre>
+<img src="assets/demo.png" alt="Demo report with cost per project and reconciliation with the provider bills" loading="lazy">
+
+<h2>Use it</h2>
+<pre>import giuggiai_meter as gm
+from openai import OpenAI
+
+client = gm.wrap(OpenAI(), project="support-bot")</pre>
+<p>Works with OpenAI, Azure OpenAI, Anthropic, Google Gemini, xAI Grok, DeepSeek, Alibaba Qwen, Mistral, Cohere, AWS Bedrock, Ollama, Groq, Together, Fireworks, OpenRouter, Perplexity, Moonshot Kimi, Zhipu GLM. <a href="https://github.com/giuggiai/giuggiai-meter/blob/main/docs/providers.md">Full table</a>.</p>
+
+<h2>How it works</h2>
+<img src="assets/how-it-works.png" alt="How it works: wrap your client, one row per call with tokens only, report and reconcile" loading="lazy">
+
+<footer>MIT license · Made by GiuggiAI · Figures in the images are illustrative. Not affiliated with any AI provider.</footer>
+</main>
+</body>
+</html>
