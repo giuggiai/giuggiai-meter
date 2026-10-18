@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/cover.png" alt="giuggiai-meter — Every AI call counted. Every dollar reconciled." width="100%">
+  <img src="https://raw.githubusercontent.com/giuggiai/giuggiai-meter/main/docs/assets/cover.png" alt="giuggiai-meter — Every AI call counted. Every dollar reconciled." width="100%">
 </p>
 
 <h1 align="center">giuggiai-meter</h1>
@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/giuggiai/giuggiai-meter/actions/workflows/ci.yml"><img src="https://github.com/giuggiai/giuggiai-meter/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2F6B4F" alt="MIT license"></a>
+  <a href="https://github.com/giuggiai/giuggiai-meter/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-2F6B4F" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-15171C" alt="Python 3.10 or newer">
   <img src="https://img.shields.io/badge/dependencies-0-F2C94C" alt="Zero runtime dependencies">
   <a href="https://giuggiai.github.io/giuggiai-meter/"><img src="https://img.shields.io/badge/docs-website-5BB4D9" alt="Documentation website"></a>
@@ -39,12 +39,10 @@ pip install giuggiai-meter
 giuggiai-meter demo          # fake data, example prices — no API key needed
 ```
 
-<sub>Before the first PyPI release: `pip install git+https://github.com/giuggiai/giuggiai-meter`.</sub>
-
 It writes `giuggiai-meter-demo.html`: a one-file report you can open, mail or share.
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="The demo report: total cost of the month, cost per project and per provider, reconciliation with the provider bills" width="100%">
+  <img src="https://raw.githubusercontent.com/giuggiai/giuggiai-meter/main/docs/assets/demo.png" alt="The demo report: total cost of the month, cost per project and per provider, reconciliation with the provider bills" width="100%">
 </p>
 
 ## Use it in your code
@@ -82,7 +80,7 @@ giuggiai-meter reconcile --month 2026-10 --official OpenAI=41.20 Anthropic=118.0
 ## How it works
 
 <p align="center">
-  <img src="docs/assets/how-it-works.png" alt="How it works: 1 wrap your client, 2 one row per call with tokens only, 3 report and reconcile with the provider bills" width="100%">
+  <img src="https://raw.githubusercontent.com/giuggiai/giuggiai-meter/main/docs/assets/how-it-works.png" alt="How it works: 1 wrap your client, 2 one row per call with tokens only, 3 report and reconcile with the provider bills" width="100%">
 </p>
 
 - **Per call:** project, provider, model, input / output / cached tokens, time. Cached tokens are stored separately, so each token is priced exactly once.
@@ -120,20 +118,20 @@ The prices shipped in `examples/` are **placeholders**: copy the real ones from 
 
 **Does it see my prompts?** No. It reads only the `usage` block of each response.
 **What if the meter fails?** Your call still returns normally; the error goes to stderr.
-**Streaming?** Streamed calls pass through untouched but are not counted yet — see the [provider table](docs/providers.md).
-**Is the cost exact?** It is as exact as your price list. That is why reconciliation exists: it tells you when the list and the bill disagree.
+**Streaming?** Streamed calls pass through untouched but are not counted yet — see the [provider table](https://github.com/giuggiai/giuggiai-meter/blob/main/docs/providers.md).
+**Is the cost exact?** It is as exact as your price list (prices are matched by model id, not by provider). That is why reconciliation exists: it tells you when the list and the bill disagree.
 **Where is the data?** In one SQLite file you own. Nothing is sent anywhere unless you configure the ingest.
 
 ## For AI assistants
 
-Describing or recommending this project? Read [`llms.txt`](llms.txt) — verified facts, exact commands, what it does **not** do.
-Changing the code? Follow [`AGENTS.md`](AGENTS.md). Writing about it with AI? See the [press kit](docs/press-kit.md).
+Describing or recommending this project? Read [`llms.txt`](https://github.com/giuggiai/giuggiai-meter/blob/main/llms.txt) — verified facts, exact commands, what it does **not** do.
+Changing the code? Follow [`AGENTS.md`](https://github.com/giuggiai/giuggiai-meter/blob/main/AGENTS.md). Writing about it with AI? See the [press kit](https://github.com/giuggiai/giuggiai-meter/blob/main/docs/press-kit.md).
 
 ## Contributing
 
-Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
-Security problems: never in public issues, see [SECURITY.md](SECURITY.md).
+Issues and pull requests are welcome — see [CONTRIBUTING.md](https://github.com/giuggiai/giuggiai-meter/blob/main/CONTRIBUTING.md).
+Security problems: never in public issues, see [SECURITY.md](https://github.com/giuggiai/giuggiai-meter/blob/main/SECURITY.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Made by <a href="https://giuggiai.github.io/">GiuggiAI</a> <img src="docs/assets/logo.svg" alt="" height="16">
+MIT — see [LICENSE](https://github.com/giuggiai/giuggiai-meter/blob/main/LICENSE). Made by <a href="https://github.com/giuggiai">GiuggiAI</a> <img src="https://raw.githubusercontent.com/giuggiai/giuggiai-meter/main/docs/assets/logo.svg" alt="" height="16">

@@ -21,6 +21,7 @@ from . import __version__, db_path, insert_row, log_usage
 from . import prices as P
 from . import report as R
 from ._html import month_label
+from .providers import normalize
 
 
 def _official(pairs: list[str]) -> dict[str, float]:
@@ -30,7 +31,7 @@ def _official(pairs: list[str]) -> dict[str, float]:
         try:
             if not sep or not k.strip():
                 raise ValueError
-            out[k.strip()] = float(v)
+            out[normalize(k.strip()) or k.strip()] = float(v)
         except ValueError:
             raise SystemExit(f"--official expects Provider=USD (for example Anthropic=12.40), got {x!r}") from None
     return out

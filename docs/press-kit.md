@@ -24,7 +24,7 @@ See [`llms.txt`](../llms.txt). Only claim what is listed there.
 ## Assets
 | File | Use |
 |---|---|
-| `docs/assets/cover.png` (1280×640) | link preview, header image |
+| `docs/assets/cover.png` (2560×1280, 2:1) | link preview, header image |
 | `docs/assets/how-it-works.png` | explainer slide |
 | `docs/assets/demo.png` | screenshot of the report |
 | `docs/assets/logo.svg` | GiuggiAI mark |

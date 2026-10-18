@@ -21,7 +21,7 @@ Any other OpenAI-compatible endpoint works too: pass `provider="Name"` to `wrap`
 
 ## Not recorded (passed through untouched)
 
-Streaming (`stream=True`, `.stream(...)`, `generate_content_stream`, `converse_stream`, `chat_stream`), `with_raw_response` / `with_streaming_response`, batches and embeddings.
+Streaming (`stream=True`, `.stream(...)`, `generate_content_stream`, `converse_stream`, `chat_stream`, `stream_async`), `with_raw_response` / `with_streaming_response`, batches and embeddings.
 For those, log by hand: `gm.log_usage(project, provider, model, input_tokens=..., output_tokens=...)`.
 
 ## Token convention

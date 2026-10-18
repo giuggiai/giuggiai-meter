@@ -11,6 +11,7 @@
 
 ## What it does NOT do
 - It does not record streaming calls, batches or embeddings automatically (they can be logged by hand).
+- It does not price by provider: the same model id gets the same price whoever serves it.
 - It does not ship real prices: the bundled price list is an example with placeholder values.
 - It does not route, cache, retry or trace calls, and it does not send data anywhere unless the ingest is configured.
 - It is not affiliated with, or endorsed by, any AI provider.

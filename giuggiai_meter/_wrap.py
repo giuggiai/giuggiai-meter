@@ -100,6 +100,10 @@ class MeteredClient:
     def __wrapped__(self):
         return self._gm_target
 
+    @property
+    def __class__(self):  # isinstance(wrapped, OpenAI) stays True, like wrapt.ObjectProxy
+        return type(self._gm_target)
+
     def __getattr__(self, name):
         attr = getattr(self._gm_target, name)
         try:

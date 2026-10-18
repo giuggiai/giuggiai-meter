@@ -28,6 +28,8 @@ import os
 import sqlite3
 import sys
 import threading
+import time
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -97,20 +99,46 @@ def _now() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _warn(msg: str) -> None:
+    """Write a diagnostic line to stderr. Never raises (stderr may be None under pythonw or some daemons)."""
+    with contextlib.suppress(Exception):
+        sys.stderr.write(msg if msg.endswith("\n") else msg + "\n")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects: the ingest token must not travel to another URL."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+_HTTP_PAUSE_S = 60  # after a failure the ingest is skipped for this long (rows go to local storage)
+_http_down_until = 0.0
+
+
 def _emit_http(row: dict) -> bool:
+    global _http_down_until
     url, token = os.environ.get("GIUGGIAI_METER_URL"), os.environ.get("GIUGGIAI_METER_TOKEN")
     if not (url and token):
         return False
     if not url.lower().startswith(("http://", "https://")):
-        sys.stderr.write("[giuggiai_meter] GIUGGIAI_METER_URL must be http(s); falling back to local storage\n")
+        _warn("[giuggiai_meter] GIUGGIAI_METER_URL must be http(s); falling back to local storage")
         return False
+    if time.monotonic() < _http_down_until:
+        return False
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if url.lower().startswith("http://") and host not in ("localhost", "127.0.0.1", "::1"):
+        _warn("[giuggiai_meter] warning: the ingest token is sent over plain http to a remote host; use https")
     try:
         req = urllib.request.Request(url, data=json.dumps(row).encode(), method="POST",
                                      headers={"Content-Type": "application/json", "X-Meter-Token": token})
-        urllib.request.urlopen(req, timeout=2).read()
+        with _OPENER.open(req, timeout=2) as r:
+            r.read()
         return True
     except Exception as e:  # noqa: BLE001 - never break the caller
-        sys.stderr.write(f"[giuggiai_meter] HTTP ingest failed: {e}\n")
+        _http_down_until = time.monotonic() + _HTTP_PAUSE_S
+        _warn(f"[giuggiai_meter] HTTP ingest failed ({type(e).__name__}); local storage for the next {_HTTP_PAUSE_S} s")
         return False
 
 
@@ -144,7 +172,7 @@ def log_usage(slug, provider=None, model=None, input_tokens=0, output_tokens=0, 
         insert_row(row)
         return row["request_id"]
     except Exception as e:  # noqa: BLE001 - never break the caller
-        sys.stderr.write(f"[giuggiai_meter] log_usage error: {e}\n")
+        _warn(f"[giuggiai_meter] log_usage error: {e}\n")
         return None
 
 
@@ -173,7 +201,7 @@ def log_anthropic(slug, response, model=None, workspace=None):
                          cache_read_tokens=_g(u, "cache_read_input_tokens"), request_id=_rid(response),
                          workspace=workspace)
     except Exception as e:  # noqa: BLE001 - never break the caller
-        sys.stderr.write(f"[giuggiai_meter] log_anthropic error: {e}\n")
+        _warn(f"[giuggiai_meter] log_anthropic error: {e}\n")
         return None
 
 
@@ -190,7 +218,7 @@ def log_openai(slug, response, provider="OpenAI", model=None, workspace=None):
                          output_tokens=_g(u, "completion_tokens", "output_tokens"),
                          cache_read_tokens=cached, request_id=_rid(response), workspace=workspace)
     except Exception as e:  # noqa: BLE001 - never break the caller
-        sys.stderr.write(f"[giuggiai_meter] log_openai error: {e}\n")
+        _warn(f"[giuggiai_meter] log_openai error: {e}\n")
         return None
 
 
@@ -216,7 +244,7 @@ def log_response(project, response, provider=None, model=None, workspace=None, f
 
         u = extract(response)
         if u is None:
-            sys.stderr.write("[giuggiai_meter] log_response: no token usage found in the response, nothing recorded\n")
+            _warn("[giuggiai_meter] log_response: no token usage found in the response, nothing recorded\n")
             return None
         mdl = model or u["model"] or fallback_model
         rid = "gm-" + (str(u["id"]) if u["id"] else uuid.uuid4().hex)
@@ -225,7 +253,7 @@ def log_response(project, response, provider=None, model=None, workspace=None, f
                          cache_creation_tokens=u["cache_creation_tokens"], cache_read_tokens=u["cache_read_tokens"],
                          request_id=rid, workspace=workspace)
     except Exception as e:  # noqa: BLE001 - never break the caller
-        sys.stderr.write(f"[giuggiai_meter] log_response error: {e}\n")
+        _warn(f"[giuggiai_meter] log_response error: {e}\n")
         return None
 
 

@@ -2,8 +2,11 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.0] - 2026-10-19
+First public release.
+
 ### Added
+- Per-call logging, monthly report and reconciliation with the provider bills, optional HTTP ingest.
 - `gm.wrap(client, project=...)`: one line and every call is recorded, response unchanged (Anthropic, OpenAI and OpenAI-compatible APIs, Google genai, Mistral, Cohere, Amazon Bedrock Converse, Ollama; sync and async). Streaming passes through unrecorded.
 - `gm.log_response(...)`: recognises the response shape by itself (OpenAI chat and Responses, Anthropic, Gemini, Cohere, Bedrock, Ollama, DashScope), on SDK objects and raw JSON; aliases `log_gemini`, `log_grok`, `log_qwen`, `log_mistral`, `log_cohere`, `log_bedrock`, `log_ollama`.
 - `providers.py`: provider recognition from base URL, client class and model id, in extendable tables.
@@ -16,9 +19,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 - OpenAI-style, Gemini, Responses and DashScope responses: cached input tokens are no longer counted twice (`input_tokens` is now the uncached input).
 
-## [0.1.0] - unreleased
-### Added
-- First public release: per-call logging, monthly report and reconciliation, optional HTTP ingest.
 ### Security
+- The ingest token is never sent on redirects; a warning is printed when it travels over plain http to a remote host.
 - Ingest validates every field, rejects oversized or malformed bodies, drops slow clients and requires a token of at least 16 characters.
 - Database files are created readable by their owner only; the hostname is never recorded.

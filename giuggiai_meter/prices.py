@@ -6,7 +6,8 @@ File format (see examples/prices.example.json):
       "cache_write": 0, "cache_read": 0.1, "effective_from": "2026-01-01"}]
 
 The file may also be an object {"_note": "...", "prices": [ ...entries... ]}; keys starting with "_" are comments.
-The entry used for a call is the latest one with effective_from <= the call date.
+The entry used for a call is the latest one with effective_from <= the call date (calls older than the
+first entry use the first entry). Prices are looked up by model id only, not by provider.
 `python -m giuggiai_meter init` copies an example list (EXAMPLE prices, not real ones) to prices_path().
 """
 from __future__ import annotations

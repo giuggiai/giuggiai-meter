@@ -255,3 +255,26 @@ def test_version(capsys):
     with pytest.raises(SystemExit) as ex:
         main(["--version"])
     assert ex.value.code == 0 and capsys.readouterr().out.strip() == f"giuggiai-meter {gm.__version__}"
+
+
+def test_isinstance_preserved():
+    import giuggiai_meter as gm
+
+    class FakeClient:
+        base_url = "https://api.openai.com/v1"
+
+    w = gm.wrap(FakeClient(), project="p")
+    assert isinstance(w, FakeClient)
+
+
+def test_stderr_none_never_raises(monkeypatch):
+    import sys
+
+    import giuggiai_meter as gm
+    monkeypatch.setattr(sys, "stderr", None)
+    assert gm.log_response("p", object()) is None
+
+
+def test_official_names_normalized():
+    from giuggiai_meter.__main__ import _official
+    assert _official(["openai=41.2", "ANTHROPIC=1"]) == {"OpenAI": 41.2, "Anthropic": 1.0}
