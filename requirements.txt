@@ -1,0 +1,1 @@
+# giuggiai-meter has no runtime dependencies: it runs on the Python standard library (3.10+).
