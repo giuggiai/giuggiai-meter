@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @pytest.fixture(autouse=True)
 def env(tmp_path, monkeypatch):
     B._LAST_GOOD.clear()
+    B._STALE.clear()
     B._CFG_CACHE.clear()
     monkeypatch.delenv("GIUGGIAI_METER_BUDGETS_FAIL", raising=False)
     return setup_env(tmp_path, monkeypatch)
@@ -243,3 +244,23 @@ def test_ledger_widens_for_an_older_window():
     c = cfg({"id": "b", "limit": 100, "period": "month"})
     assert gm.check("p", model="big", config=c, today=TODAY).spent == pytest.approx(0)          # October
     assert gm.check("p", model="big", config=c, today=datetime.date(2026, 9, 20)).spent == pytest.approx(4)
+
+
+def test_broken_file_keeps_one_ledger_and_warns_once(tmp_path, capsys):
+    f = tmp_path / "budgets.json"
+    f.write_text(json.dumps(cfg({"id": "b", "limit": 50})))
+    spend(1)
+    gm.check("p", model="big", today=TODAY)
+    f.write_text("{ broken")
+    os.utime(f, (1, 1))
+    capsys.readouterr()
+    n = len(B._LEDGERS)
+    for _ in range(20):
+        assert "last good" in gm.check("p", model="big", today=TODAY).reason
+    assert len(B._LEDGERS) == n + 1
+    assert capsys.readouterr().err.count("last good version") == 1
+
+
+def test_invalid_since_is_a_budget_error():
+    with pytest.raises(B.BudgetError):
+        B.parse({"budgets": [{"id": "x", "limit": 1, "period": "total", "since": "ieri"}]})

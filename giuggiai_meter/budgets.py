@@ -131,7 +131,10 @@ def parse(data: dict) -> dict:
             raise BudgetError(f"{b['id']}: block_at must be >= limit")
         since = b.get("since")
         if since is not None:
-            datetime.date.fromisoformat(str(since)[:10])
+            try:
+                datetime.date.fromisoformat(str(since)[:10])
+            except ValueError:
+                raise BudgetError(f"{b['id']}: since must be a date YYYY-MM-DD") from None
         out.append({"id": str(b["id"]), "match": dict(b.get("match") or {}), "limit": limit, "period": period,
                     "since": None if since is None else str(since)[:10], "warn_at": warn_at,
                     "on_exceed": on, "degrade_to": b.get("degrade_to"), "block_at": block_at, "fail": fail})
@@ -146,6 +149,7 @@ def parse(data: dict) -> dict:
 
 _CFG_CACHE: dict[str, tuple] = {}
 _LAST_GOOD: dict[str, dict] = {}
+_STALE: dict[str, tuple] = {}  # path -> (last good config, its copy marked stale)
 
 
 def load(path: str | None = None) -> dict:
@@ -408,10 +412,15 @@ def _local_config(config, model):
         key = budgets_path() if config is None else str(config) if isinstance(config, (str, os.PathLike)) else None
         if key not in _LAST_GOOD:
             return _unreadable_decision(model, e)
-        from . import _warn
+        good = _LAST_GOOD[key]
+        stale = _STALE.get(key)
+        if stale is None or stale[0] is not good:  # one stale copy per good version: the ledger cache keeps working
+            from . import _warn
 
-        _warn(f"[giuggiai_meter] budgets unreadable, using the last good version: {type(e).__name__}: {str(e)[:120]}")
-        return {**_LAST_GOOD[key], "_stale": f" (budgets file unreadable, last good version applied: {type(e).__name__})"}
+            _warn(f"[giuggiai_meter] budgets unreadable, using the last good version: {type(e).__name__}: {str(e)[:120]}")
+            stale = _STALE[key] = (good, {**good, "_stale": f" (budgets file unreadable, last good version applied: "
+                                                            f"{type(e).__name__})"})
+        return stale[1]
 
 
 def _unreadable_decision(model, err: Exception) -> Decision:
