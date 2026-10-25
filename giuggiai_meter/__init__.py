@@ -186,8 +186,8 @@ def _init_db(p: str, migrate: bool = True) -> sqlite3.Connection:
         except OSError:
             pass
     c = sqlite3.connect(p, timeout=10)
-    c.execute("PRAGMA journal_mode=WAL;")
-    c.executescript(_DDL)
+    _busy_retry(lambda: c.execute("PRAGMA journal_mode=WAL;"), optional=True)  # an optimisation: never fatal
+    _busy_retry(lambda: c.executescript(_DDL))
     if migrate:
         try:
             _migrate(c)
@@ -256,9 +256,30 @@ def _emit_http(row: dict) -> bool:
 _V1_FIELDS = FIELDS[:12]
 
 
+def _busy_retry(fn, attempts: int = 6, optional: bool = False):
+    """Run fn, retrying when SQLite reports the file busy or locked (another process is setting it up or writing)."""
+    for k in range(attempts):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
+            if k == attempts - 1:
+                if optional:
+                    return None
+                raise
+            time.sleep(0.05 * 2 ** k)
+    return None
+
+
 def insert_row(row: dict, path: str | None = None) -> None:
     """Insert a usage row (idempotent on request_id). The v2 columns are written only when the row has them; if the
     database is not upgraded yet, the row is stored with the v1 columns rather than lost."""
+    _busy_retry(lambda: _insert(row, path))
+
+
+def _insert(row: dict, path: str | None) -> None:
     cols = list(_V1_FIELDS) + [k for k in FIELDS[12:] if row.get(k) is not None]
     with _LOCK, contextlib.closing(connect(path)) as c, c:
         try:
