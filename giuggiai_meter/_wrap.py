@@ -100,6 +100,20 @@ def _guard(meter: dict, kwargs: dict) -> None:
 
 
 def _metered(fn, meter: dict):
+    if meter.get("budgets") is not None and inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def acall(*args, **kwargs):  # async clients: the budget check runs off the event loop
+            await asyncio.to_thread(_guard, meter, kwargs)
+            resp = await fn(*args, **kwargs)
+            if not kwargs.get("stream"):
+                try:
+                    await asyncio.to_thread(_record, meter, resp, kwargs)
+                except Exception as e:  # noqa: BLE001
+                    _warn("wrap: async logging failed", e)
+            return resp
+
+        return acall
+
     @functools.wraps(fn)
     def call(*args, **kwargs):
         if meter.get("budgets") is not None:

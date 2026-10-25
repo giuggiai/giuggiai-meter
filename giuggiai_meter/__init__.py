@@ -103,19 +103,38 @@ CREATE INDEX IF NOT EXISTS ix_usage_unit ON usage(unit_id);
 """
 
 
+def _has_v2(c: sqlite3.Connection) -> bool:
+    return {n for n, _ in _V2_COLUMNS} <= {r[1] for r in c.execute("PRAGMA table_info(usage)")}
+
+
 def _migrate(c: sqlite3.Connection) -> list[str]:
-    """Bring an open database to schema v2. Idempotent; returns what was added (empty when already current)."""
+    """Bring an open database to schema v2. Idempotent and safe when several processes upgrade the same file at once:
+    the upgrade runs in one write transaction (BEGIN IMMEDIATE), and a column another process added meanwhile is
+    simply skipped. Returns what was added (empty when already current)."""
+    if _has_v2(c) and c.execute("SELECT 1 FROM sqlite_master WHERE name='outcomes'").fetchone():
+        return []
     added = []
-    have = {r[1] for r in c.execute("PRAGMA table_info(usage)")}
-    for name, typ in _V2_COLUMNS:
-        if name not in have:
-            c.execute(f"ALTER TABLE usage ADD COLUMN {name} {typ}")
-            added.append(f"usage.{name}")
-    before = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
-    c.executescript(_V2_DDL)
-    after = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
-    added += sorted(after - before)
-    c.commit()
+    c.execute("BEGIN IMMEDIATE")  # waits (connection timeout) for other writers: one upgrade at a time
+    try:
+        have = {r[1] for r in c.execute("PRAGMA table_info(usage)")}
+        for name, typ in _V2_COLUMNS:
+            if name not in have:
+                try:
+                    c.execute(f"ALTER TABLE usage ADD COLUMN {name} {typ}")
+                    added.append(f"usage.{name}")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e).lower():
+                        raise
+        before = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
+        for stmt in _V2_DDL.split(";"):
+            if stmt.strip():
+                c.execute(stmt)
+        after = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
+        added += sorted(after - before)
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
     return added
 
 
@@ -170,7 +189,10 @@ def _init_db(p: str, migrate: bool = True) -> sqlite3.Connection:
     c.execute("PRAGMA journal_mode=WAL;")
     c.executescript(_DDL)
     if migrate:
-        _migrate(c)
+        try:
+            _migrate(c)
+        except sqlite3.Error as e:  # never block logging: rows fall back to the v1 columns (see insert_row)
+            _warn(f"[giuggiai_meter] schema upgrade postponed: {type(e).__name__}: {e}")
     for f in (p, p + "-wal", p + "-shm"):
         try:
             os.chmod(f, 0o600)
@@ -231,11 +253,22 @@ def _emit_http(row: dict) -> bool:
         return False
 
 
+_V1_FIELDS = FIELDS[:12]
+
+
 def insert_row(row: dict, path: str | None = None) -> None:
-    """Insert a usage row (idempotent on request_id)."""
+    """Insert a usage row (idempotent on request_id). The v2 columns are written only when the row has them; if the
+    database is not upgraded yet, the row is stored with the v1 columns rather than lost."""
+    cols = list(_V1_FIELDS) + [k for k in FIELDS[12:] if row.get(k) is not None]
     with _LOCK, contextlib.closing(connect(path)) as c, c:
-        c.execute(f"INSERT OR IGNORE INTO usage({','.join(FIELDS)},synced) VALUES({','.join('?' * len(FIELDS))},0)",
-                  [row.get(k) for k in FIELDS])
+        try:
+            c.execute(f"INSERT OR IGNORE INTO usage({','.join(cols)},synced) VALUES({','.join('?' * len(cols))},0)",
+                      [row.get(k) for k in cols])
+        except sqlite3.OperationalError as e:
+            if len(cols) == len(_V1_FIELDS) or "column" not in str(e).lower():
+                raise
+            c.execute(f"INSERT OR IGNORE INTO usage({','.join(_V1_FIELDS)},synced) "
+                      f"VALUES({','.join('?' * len(_V1_FIELDS))},0)", [row.get(k) for k in _V1_FIELDS])
 
 
 def log_usage(slug, provider=None, model=None, input_tokens=0, output_tokens=0, cache_creation_tokens=0,
@@ -247,6 +280,7 @@ def log_usage(slug, provider=None, model=None, input_tokens=0, output_tokens=0, 
     plans in the budgets file decide at report time. `unit_id` / `unit_kind`: the unit of work this call belongs to
     (default: the innermost `gm.unit(...)` block, then $GIUGGIAI_METER_UNIT)."""
     try:
+        billing = _norm_billing(billing)
         if unit_id is None:
             from ._units import current
             unit_id, cur_kind = current()
@@ -391,6 +425,20 @@ def log_bedrock(project, response, model=None, workspace=None):
 def log_ollama(project, response, model=None, workspace=None):
     """Ollama native API (`chat` / `generate`)."""
     return log_response(project, response, provider="Ollama", model=model, workspace=workspace)
+
+
+def _norm_billing(b):
+    """'api', 'free', 'subscription:<id>' (case-insensitive prefix) or None; anything else is dropped with a warning."""
+    if b is None:
+        return None
+    s = str(b).strip()
+    low = s.lower()
+    if low in ("api", "free"):
+        return low
+    if low.startswith("subscription:") and len(s) > len("subscription:"):
+        return "subscription:" + s.split(":", 1)[1]
+    _warn(f"[giuggiai_meter] unknown billing {s!r} ignored (use 'api', 'free' or 'subscription:<plan id>')")
+    return None
 
 
 def outcome(unit_id, accepted: bool, score: float | None = None, kind: str | None = None, db: str | None = None) -> bool:

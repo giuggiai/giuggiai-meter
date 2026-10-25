@@ -11,7 +11,7 @@ import calendar
 import datetime
 import math
 
-from .budgets import Ledger, _config, _prices, ledger
+from .budgets import Ledger, _config, _prices, horizon, ledger
 
 
 def _period_end(period: str, today: datetime.date) -> datetime.date | None:
@@ -29,9 +29,9 @@ def status(config=None, price_idx=None, db: str | None = None, today: datetime.d
     idx = _prices(price_idx)
     today = today or datetime.date.today()
     try:
-        led = ledger(db, cfg, idx)
+        led = ledger(db, cfg, idx, today)
     except FileNotFoundError:  # nothing recorded yet: every budget is untouched
-        led = Ledger(db or '', cfg, idx)
+        led = Ledger(db or "", cfg, idx, horizon(cfg, today))
     out = []
     for b in cfg["budgets"]:
         spent = led.spent(b, today)

@@ -253,7 +253,12 @@ def main(argv: list[str] | None = None) -> int:
         cfg_path = a.budgets or B.budgets_path()
         if not Path(cfg_path).exists():
             raise SystemExit(f"budgets file not found: {cfg_path} (see examples/budgets.example.json)")
-        rows = F.status(cfg_path, a.prices)
+        try:
+            rows = F.status(cfg_path, a.prices)
+        except FileNotFoundError as e:
+            raise SystemExit(f"price list not found: {e} (run `giuggiai-meter init`): spend cannot be priced") from None
+        except B.BudgetError as e:
+            raise SystemExit(f"budgets file invalid: {e}") from None
         print(json.dumps({"version": __version__, "currency": B.load(cfg_path)["currency"], "budgets": rows}, indent=2)
               if a.json else R.to_table(rows))
         return F.exit_code(rows)

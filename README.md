@@ -109,8 +109,10 @@ Without wrapping: `d = gm.check("research", model="gpt-large", source="agents/re
 `Decision` (`allow`, `action` = allow | warn | degrade | block, `model` to use, `spent`, `limit`, `remaining`, `reason`).
 `match` takes shell patterns on project, source, provider and model; periods are day, week, month or total (from `since`).
 If the database cannot be read, `fail: open` (default) lets calls through and `fail: closed` stops them: use closed for prepaid credit.
-A check reads only the rows added since the previous one (in-memory totals, nothing written): well under a millisecond on a laptop.
-Containers and other hosts ask the ingest server: `gm.check_remote(...)` (`GET /check`). Try it: `python examples/budget_guard.py`.
+A check never writes. The first check of a process reads the rows inside the budget windows once; after that each check reads only the rows added since the previous one (in-memory totals): about half a millisecond. Async clients run the check in a worker thread, off the event loop.
+Streamed calls (`stream=True`) are checked before they start but are not counted afterwards: budgets do not grow with streaming yet.
+If the budgets file itself is broken, the last good version read by the process keeps applying; with none, `GIUGGIAI_METER_BUDGETS_FAIL=closed` blocks every call (default: open).
+Containers and other hosts ask the ingest server: `gm.check_remote(...)` (`GET /check`); if the server cannot be reached, only a local copy of the budgets file can apply `fail: closed`. Try it: `python examples/budget_guard.py`.
 
 ### 2. Plans: subscriptions are not per-token spend
 
@@ -164,7 +166,7 @@ and cost per result to the monthly report. Try it: `python examples/plans_and_fo
 | Cost per project | ✅ | ✅ | ✅ | estimate per call |
 | Reconcile with the provider bill | ✅ built in | — | — | — |
 | Budgets before the call | ✅ in your process, no proxy | ✅ at the proxy | — | — |
-| Subscription plans valued at list price | ✅ | — | — | — |
+| Subscription plans valued at list price | ✅ | not built in, as far as we know | not built in, as far as we know | — |
 | Cost per accepted result + model advice | ✅ | — | via traces and scores | — |
 | Stores prompts / answers | never | configurable | yes (it's the point) | no |
 | Dependencies | none | several | several | some |
@@ -183,6 +185,7 @@ Everything is optional and comes from environment variables (see `.env.example`)
 | `GIUGGIAI_METER_SOURCE` | empty | optional label of the service that logs (the hostname is never recorded) |
 | `GIUGGIAI_METER_BUDGETS` | `~/.config/giuggiai-meter/budgets.json` | budgets and plans (optional) |
 | `GIUGGIAI_METER_UNIT` | — | unit of work for every call of the process (e.g. a job id) |
+| `GIUGGIAI_METER_BUDGETS_FAIL` | `open` | `closed`: block every call while the budgets file cannot be read |
 | `GIUGGIAI_METER_URL` | — | remote ingest, e.g. `https://meter.example.com/ingest` |
 | `GIUGGIAI_METER_TOKEN` | — | shared ingest token (16+ characters) |
 

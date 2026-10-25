@@ -91,8 +91,15 @@ def parse(data: dict) -> dict:
     if not isinstance(data, dict):
         raise BudgetError("the budgets file must be a JSON object")
     cur = str(data.get("currency") or "USD").upper()
-    fx = {str(k).upper(): float(v) for k, v in (data.get("fx") or {}).items()}
+    try:
+        fx = {str(k).upper(): float(v) for k, v in (data.get("fx") or {}).items()}
+    except (TypeError, ValueError):
+        raise BudgetError("fx values must be numbers") from None
+    if any(v <= 0 for v in fx.values()):
+        raise BudgetError("fx values must be positive")
     fx.setdefault(cur, 1.0)
+    if cur != "USD" and "USD" not in fx and (data.get("budgets") or data.get("plans")):
+        raise BudgetError(f"currency is {cur}: fx.USD (units of {cur} per USD) is required, prices are in USD")
     out = []
     for b in data.get("budgets") or []:
         if not isinstance(b, dict) or not b.get("id"):
@@ -110,15 +117,22 @@ def parse(data: dict) -> dict:
             raise BudgetError(f"{b['id']}: fail must be open or closed")
         try:
             limit = float(b["limit"])
+            warn_at = None if b.get("warn_at") is None else float(b["warn_at"])
+            block_at = None if b.get("block_at") is None else float(b["block_at"])
         except (KeyError, TypeError, ValueError):
-            raise BudgetError(f"{b['id']}: limit (a number) required") from None
+            raise BudgetError(f"{b['id']}: limit (a number) required; warn_at and block_at must be numbers") from None
+        if limit < 0:
+            raise BudgetError(f"{b['id']}: limit must be >= 0")
+        if warn_at is not None and not (0 < warn_at <= 1):
+            raise BudgetError(f"{b['id']}: warn_at is a fraction of the limit, between 0 and 1")
+        if block_at is not None and block_at < limit:
+            raise BudgetError(f"{b['id']}: block_at must be >= limit")
         since = b.get("since")
         if since is not None:
             datetime.date.fromisoformat(str(since)[:10])
         out.append({"id": str(b["id"]), "match": dict(b.get("match") or {}), "limit": limit, "period": period,
-                    "since": None if since is None else str(since)[:10], "warn_at": b.get("warn_at"),
-                    "on_exceed": on, "degrade_to": b.get("degrade_to"),
-                    "block_at": None if b.get("block_at") is None else float(b["block_at"]), "fail": fail})
+                    "since": None if since is None else str(since)[:10], "warn_at": warn_at,
+                    "on_exceed": on, "degrade_to": b.get("degrade_to"), "block_at": block_at, "fail": fail})
     plans = []
     for p in data.get("plans") or []:
         if not isinstance(p, dict) or not p.get("id"):
@@ -129,10 +143,12 @@ def parse(data: dict) -> dict:
 
 
 _CFG_CACHE: dict[str, tuple] = {}
+_LAST_GOOD: dict[str, dict] = {}
 
 
 def load(path: str | None = None) -> dict:
-    """Load and validate the budgets file; a missing file means no budgets (every call allowed)."""
+    """Load and validate the budgets file; a missing file means no budgets (every call allowed).
+    Raises BudgetError (or OSError / ValueError) when the file exists but cannot be read or is malformed."""
     p = path or budgets_path()
     try:
         mtime = os.stat(p).st_mtime_ns
@@ -143,7 +159,9 @@ def load(path: str | None = None) -> dict:
         return hit[1]
     cfg = parse(json.loads(Path(p).read_text(encoding="utf-8")))
     _CFG_CACHE[p] = (mtime, cfg)
+    _LAST_GOOD[p] = cfg
     return cfg
+
 
 
 _PARSED: dict[str, dict] = {}
@@ -152,10 +170,8 @@ _PARSED: dict[str, dict] = {}
 def _config(config) -> dict:
     """A validated config from None (default file), a path or a dict. Equal dicts share one parsed object, so the
     in-memory ledger survives across checks even when the caller builds the dict each time."""
-    if config is None:
-        return load()
-    if isinstance(config, (str, os.PathLike)):
-        return load(str(config))
+    if config is None or isinstance(config, (str, os.PathLike)):
+        return load(None if config is None else str(config))
     key = json.dumps(config, sort_keys=True, default=str)
     hit = _PARSED.get(key)
     if hit is None:
@@ -169,13 +185,17 @@ _PRICE_CACHE: dict[str, tuple] = {}
 
 
 def _prices(prices) -> dict:
+    """The price index. Raises FileNotFoundError when there is no price list: spend cannot be priced, so the
+    budgets' fail mode decides (a missing list must not read as zero spend)."""
     if isinstance(prices, dict):
+        if not prices:
+            raise FileNotFoundError("empty price list")
         return prices
     p = str(prices) if prices else P.prices_path()
     try:
         mtime = os.stat(p).st_mtime_ns
     except OSError:
-        return {}
+        raise FileNotFoundError(p) from None
     hit = _PRICE_CACHE.get(p)
     if hit and hit[0] == mtime:
         return hit[1]
@@ -216,12 +236,19 @@ def window_start(period: str, since: str | None, today: datetime.date) -> str:
 class Ledger:
     """Cash spend per budget and per day for one database, budgets file and price list, updated by rowid."""
 
-    def __init__(self, db: str, cfg: dict, idx: dict):
+    def __init__(self, db: str, cfg: dict, idx: dict, min_day: str = "0000-00-00"):
         self.db, self.cfg, self.idx = db, cfg, idx
+        self.min_day = min_day  # rows dated before this never count in any window: they are skipped
+        self._reset()
+
+    def _reset(self) -> None:
         self.last_rowid = 0
-        self.days: dict[str, dict[str, float]] = {b["id"]: {} for b in cfg["budgets"]}
-        self.unpriced: dict[str, int] = {b["id"]: 0 for b in cfg["budgets"]}
-        self.lock = threading.Lock()
+        self.last_request_id = None
+        self.file_id = None
+        self.days: dict[str, dict[str, float]] = {b["id"]: {} for b in self.cfg["budgets"]}
+        self.unpriced: dict[str, int] = {b["id"]: 0 for b in self.cfg["budgets"]}
+        if not hasattr(self, "lock"):
+            self.lock = threading.Lock()
 
     def refresh(self) -> None:
         from .plans import billing_for
@@ -234,16 +261,25 @@ class Ledger:
                 cols = {r[1] for r in c.execute("PRAGMA table_info(usage)")}
                 if not cols:
                     raise sqlite3.OperationalError("no usage table")
+                st = os.stat(self.db)
+                fid = (st.st_dev, st.st_ino)
+                if self.last_rowid:  # same file and same last row? otherwise it was recreated or restored: recount
+                    r = c.execute("SELECT request_id FROM usage WHERE rowid = ?", (self.last_rowid,)).fetchone()
+                    if fid != self.file_id or r is None or r[0] != self.last_request_id:
+                        self._reset()
+                self.file_id = fid
                 billing = "billing" if "billing" in cols else "NULL"
                 rows = c.execute(
                     f"SELECT rowid, log_time, slug, source, provider, model, input_tokens, output_tokens, "
-                    f"cache_creation_tokens, cache_read_tokens, {billing} FROM usage WHERE rowid > ? ORDER BY rowid",
-                    (self.last_rowid,)).fetchall()
+                    f"cache_creation_tokens, cache_read_tokens, {billing}, request_id FROM usage "
+                    f"WHERE rowid > ? ORDER BY rowid", (self.last_rowid,)).fetchall()
             finally:
                 c.close()
             budgets, plans = self.cfg["budgets"], self.cfg["plans"]
-            for rid, t, slug, src, prov, model, it, ot, cw, cr, bill in rows:
-                self.last_rowid = rid
+            for rid, t, slug, src, prov, model, it, ot, cw, cr, bill, req in rows:
+                self.last_rowid, self.last_request_id = rid, req
+                if (t or "")[:10] < self.min_day:
+                    continue
                 row = {"project": slug, "source": src, "provider": prov, "model": model, "billing": bill}
                 hit = [b for b in budgets if matches(b["match"], row)]
                 if not hit:
@@ -271,18 +307,28 @@ _LEDGERS: dict[tuple, Ledger] = {}
 _LEDGERS_LOCK = threading.Lock()
 
 
-def ledger(db: str | None, cfg: dict, idx: dict) -> Ledger:
-    """The (cached) ledger for this database, budgets and prices, refreshed with the rows added since last time."""
+def horizon(cfg: dict, today: datetime.date) -> str:
+    """First day any budget (or the 7-day pace of the forecast) can look at on `today`."""
+    starts = [window_start(b["period"], b["since"], today) for b in cfg["budgets"]]
+    starts.append((today - datetime.timedelta(days=7)).isoformat())
+    return min(starts)
+
+
+def ledger(db: str | None, cfg: dict, idx: dict, today: datetime.date | None = None) -> Ledger:
+    """The (cached) ledger for this database, budgets and prices, refreshed with the rows added since last time.
+    The first refresh reads only rows dated inside the windows of `today` (indexed on log_time is not needed:
+    rows are read once, by rowid, and older ones are skipped)."""
     from . import db_path
 
     path = os.path.abspath(db or db_path())
-    key = (path, id(cfg), id(idx))
+    first = horizon(cfg, today or datetime.date.today())
+    key = (path, id(cfg), id(idx), first)
     with _LEDGERS_LOCK:
         led = _LEDGERS.get(key)
         if led is None:
             if len(_LEDGERS) > 32:
                 _LEDGERS.clear()
-            led = _LEDGERS[key] = Ledger(path, cfg, idx)
+            led = _LEDGERS[key] = Ledger(path, cfg, idx, first)
     led.refresh()
     return led
 
@@ -321,7 +367,18 @@ def check(project, model=None, provider=None, source=None, estimate_usd=0.0, inp
           db=None, config=None, prices=None, today: datetime.date | None = None) -> Decision:
     """Decide whether a call may run. Never raises for a missing or unreadable database: the budgets' `fail`
     mode decides. Raises BudgetError only for a malformed budgets file passed explicitly."""
-    cfg = _config(config)
+    stale = ""
+    try:
+        cfg = _config(config)
+    except Exception as e:  # noqa: BLE001 - malformed or unreadable budgets: never raise into the caller
+        key = budgets_path() if config is None else str(config) if isinstance(config, (str, os.PathLike)) else None
+        if key not in _LAST_GOOD:
+            return _unreadable_decision(model, e)
+        cfg = _LAST_GOOD[key]  # the file broke after a good read: keep enforcing the last good budgets
+        stale = f" (budgets file unreadable, last good version applied: {type(e).__name__})"
+        from . import _warn
+
+        _warn(f"[giuggiai_meter] budgets unreadable, using the last good version: {type(e).__name__}: {str(e)[:120]}")
     cur = cfg["currency"]
     from .providers import normalize
 
@@ -332,12 +389,27 @@ def check(project, model=None, provider=None, source=None, estimate_usd=0.0, inp
     today = today or datetime.date.today()
     try:
         idx = _prices(prices)
-        led = ledger(db, cfg, idx)
-        est = _estimate(estimate_usd, input_tokens, output_tokens, model, provider, idx, cfg, today)
+        led = ledger(db, cfg, idx, today)
+        est = _estimate(estimate_usd, input_tokens, output_tokens, model, row["provider"], idx, cfg, today)
         decisions = [_judge(b, led.spent(b, today), est, model, cur) for b in hit]
     except Exception as e:  # noqa: BLE001 - unreadable spend: apply the fail mode
-        return fail_decision(hit, model, cur, f"spend unavailable ({type(e).__name__})")
-    return max(decisions, key=lambda d: (_SEVERITY[d.action], -(d.remaining if d.remaining is not None else 0)))
+        return fail_decision(hit, model, cur, f"spend unavailable ({type(e).__name__}){stale}")
+    d = max(decisions, key=lambda d: (_SEVERITY[d.action], -(d.remaining if d.remaining is not None else 0)))
+    if stale:
+        d.reason = (d.reason or d.action) + stale
+    return d
+
+
+def _unreadable_decision(model, err: Exception) -> Decision:
+    """The budgets cannot be read and this process never read a good version of them:
+    $GIUGGIAI_METER_BUDGETS_FAIL decides, "open" (default, allow) or "closed" (block every call)."""
+    why = f"budgets unreadable ({type(err).__name__}: {str(err)[:120]})"
+    from . import _warn
+
+    _warn(f"[giuggiai_meter] {why}")
+    if os.environ.get("GIUGGIAI_METER_BUDGETS_FAIL", "open").lower() == "closed":
+        return Decision(False, "block", model, reason=f"{why}; GIUGGIAI_METER_BUDGETS_FAIL=closed")
+    return Decision(True, "allow", model, reason=f"{why}; failing open")
 
 
 def fail_decision(hit: list[dict], model, cur: str, why: str) -> Decision:
@@ -370,7 +442,13 @@ def check_remote(project, model=None, provider=None, source=None, estimate_usd=0
     try:
         if not base:
             raise RuntimeError("GIUGGIAI_METER_URL not set")
-        from . import _OPENER
+        if not base.lower().startswith(("http://", "https://")):
+            raise RuntimeError("GIUGGIAI_METER_URL must be http(s)")
+        from . import _OPENER, _warn
+
+        host = (urllib.parse.urlsplit(base).hostname or "").lower()
+        if base.lower().startswith("http://") and host not in ("localhost", "127.0.0.1", "::1"):
+            _warn("[giuggiai_meter] warning: the meter token is sent over plain http to a remote host; use https")
 
         url = f"{base}/check?" + urllib.parse.urlencode({k: v for k, v in q.items() if v not in (None, "")})
         req = urllib.request.Request(url, headers={"X-Meter-Token": token})

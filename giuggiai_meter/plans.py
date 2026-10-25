@@ -21,7 +21,12 @@ def billing_for(row: dict, plans: list[dict]) -> str:
 
     b = row.get("billing")
     if b:
-        return str(b)
+        low = str(b).strip().lower()
+        if low in ("api", "free"):
+            return low
+        if low.startswith("subscription:") and len(low) > len("subscription:"):
+            return "subscription:" + str(b).strip().split(":", 1)[1]
+        return "api"  # unknown values count as paid per token (never silently free)
     r = row if "project" in row else {**row, "project": row.get("slug")}
     for p in plans or []:
         if p.get("match") and matches(p["match"], r):
