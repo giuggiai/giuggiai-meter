@@ -1,0 +1,15 @@
+{
+  "_note": "EXAMPLE budgets file: ids, patterns and amounts are placeholders. Put it at ~/.config/giuggiai-meter/budgets.json or point GIUGGIAI_METER_BUDGETS at it. Amounts are in `currency`; prices are in USD and converted with `fx` (1 USD = fx.USD units of currency).",
+  "currency": "EUR",
+  "fx": {"USD": 0.92},
+  "budgets": [
+    {"id": "agents-monthly", "match": {"source": "agents/*"}, "limit": 50, "period": "month",
+     "warn_at": 0.8, "on_exceed": "degrade", "degrade_to": "example-small", "block_at": 65},
+    {"id": "support-bot-daily", "match": {"project": "support-bot"}, "limit": 3, "period": "day", "on_exceed": "block"},
+    {"id": "prepaid-credit", "match": {"provider": "Anthropic"}, "limit": 190, "period": "total", "since": "2026-10-01",
+     "on_exceed": "block", "fail": "closed"}
+  ],
+  "plans": [
+    {"id": "coding-plan", "monthly_fee": 100, "currency": "USD", "match": {"source": "ide/*"}}
+  ]
+}

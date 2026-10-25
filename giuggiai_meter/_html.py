@@ -122,12 +122,75 @@ def _big_total(total: float) -> str:
     return f'<span class="hl">{sign}${whole}<span class="cents">.{cents}</span></span>'
 
 
+def _money(x, cur: str) -> str:
+    return "—" if x is None else f"{x:,.2f} {escape(cur)}"
+
+
+def _governance(g: dict) -> list[str]:
+    """Sections for budgets, forecast, plans and cost per result (each optional)."""
+    e, out = escape, []
+    budgets = g.get("budgets") or []
+    if budgets:
+        out.append('<section id="budgets"><h2>Budgets <span>spend against each limit</span></h2>')
+        for b in budgets:
+            lim = b["limit"] or 0
+            pct = min(100.0, _pct(b["spent"], lim)) if lim else 0.0
+            chip = {"ok": "ok", "warn": "none", "over": "bad"}[b["state"]]
+            out.append(f'<div class="bar-row"><div class="name" title="{e(b["budget_id"])}">{e(b["budget_id"])}</div>'
+                       f'<div class="track"><div class="seg" style="width:{pct:.2f}%;background:'
+                       f'{"#C0392B" if b["state"] == "over" else "#F2C94C" if b["state"] == "warn" else "#2F6B4F"}"></div></div>'
+                       f'<div class="amt">{_money(b["spent"], b["currency"])}<small>of {_money(lim, b["currency"])} · '
+                       f'{e(b["period"])} · <span class="chip {chip}">{e(b["state"])}</span></small></div></div>')
+        out.append("</section>")
+        out.append('<section id="forecast"><h2>Forecast <span>last 7 days pace</span></h2><div class="scroll"><table>'
+                   '<thead><tr><th>Budget</th><th class="num">Per day</th><th class="num">Remaining</th>'
+                   '<th>Runs out</th><th class="num">End of period</th></tr></thead><tbody>')
+        for b in budgets:
+            out.append(f'<tr><td>{e(b["budget_id"])}</td><td class="num">{_money(b["burn_per_day"], b["currency"])}</td>'
+                       f'<td class="num">{_money(b["remaining"], b["currency"])}</td>'
+                       f'<td>{e(b["exhaust_date"] or "not at this pace")}</td>'
+                       f'<td class="num">{_money(b["projected_period_end"], b["currency"])}</td></tr>')
+        out.append("</tbody></table></div></section>")
+    plans = g.get("plans") or []
+    if plans:
+        out.append('<section id="plans"><h2>Plans <span>subscriptions: list-price value vs fee</span></h2>'
+                   '<div class="scroll"><table><thead><tr><th>Plan</th><th class="num">Calls</th>'
+                   '<th class="num">List-price value</th><th class="num">Monthly fee</th><th class="num">Value / fee</th>'
+                   "</tr></thead><tbody>")
+        for p in plans:
+            mult = "—" if p["multiple"] is None else f'{p["multiple"]:.1f}×'
+            out.append(f'<tr><td>{e(p["plan"])}</td><td class="num">{_int(p["calls"])}</td>'
+                       f'<td class="num">{_money(p["list_value"], p["currency"])}</td>'
+                       f'<td class="num">{_money(p["fee"], p["currency"])}</td><td class="num">{mult}</td></tr>')
+        out.append('</tbody></table></div><p class="note">Calls covered by a plan cost nothing per token; their '
+                   "list-price value shows whether the plan pays for itself.</p></section>")
+    units = g.get("units") or []
+    if units:
+        out.append('<section id="units"><h2>Cost per result <span>units of work and accepted results</span></h2>'
+                   '<div class="scroll"><table><thead><tr><th>Kind</th><th>Model</th><th class="num">Units</th>'
+                   '<th class="num">Accepted</th><th class="num">Cost / unit</th><th class="num">Cost / accepted</th>'
+                   "</tr></thead><tbody>")
+        for u in units:
+            rate = "—" if u["acceptance_rate"] is None else f'{u["acceptance_rate"]:.0%}'
+            out.append(f'<tr><td>{e(str(u["kind"]))}</td><td>{e(str(u["model"]))}</td><td class="num">{_int(u["units"])}</td>'
+                       f'<td class="num">{rate}</td><td class="num">{_usd(u["cost_per_unit"])}</td>'
+                       f'<td class="num">{_usd(u["cost_per_accepted"])}</td></tr>')
+        out.append("</tbody></table></div>")
+        if g.get("advice"):
+            out.append(f'<p class="note"><strong>Advice:</strong> {e(g["advice"])}</p>')
+        out.append("</section>")
+    return out
+
+
 def to_html(rows: list[dict], month: str, reconciliation: list[dict] | None = None,
-            unpriced: list[dict] | None = None, title: str | None = None, generated_at: str | None = None) -> str:
+            unpriced: list[dict] | None = None, title: str | None = None, generated_at: str | None = None,
+            governance: dict | None = None) -> str:
     """Render the monthly report as one self-contained HTML page (inline CSS, no scripts, no external resources).
 
     rows: output of report.monthly(); reconciliation: output of report.reconcile() (optional);
     unpriced: output of report.unpriced() (optional). Every value taken from the data is HTML-escaped.
+    governance (optional): {"budgets": forecast.status(...), "plans": report.plans(...), "units": report.units(...),
+    "advice": text} adds the Budgets, Forecast, Plans and Cost per result sections.
     """
     from . import __version__
 
@@ -258,6 +321,9 @@ def to_html(rows: list[dict], month: str, reconciliation: list[dict] | None = No
         out.append(f'</tbody><tfoot><tr><td>Total</td><td></td><td class="num">{_int(calls)}</td>'
                    f'<td class="num">{_int(tin)}</td><td class="num">{_int(tout)}</td><td class="num">{_usd(total)}</td>'
                    f'<td class="num">{_int(n_unpriced)}</td></tr></tfoot></table></div></section>')
+
+    if governance:
+        out += _governance(governance)
 
     when = generated_at or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     out.append(f"<footer>Generated {e(when)} by giuggiai-meter {e(__version__)}. Costs are computed from your price list "

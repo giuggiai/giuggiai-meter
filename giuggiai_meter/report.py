@@ -78,3 +78,5 @@ def to_table(rows: list[dict]) -> str:
 
 
 from ._html import to_html  # noqa: F401 - re-exported: report.to_html(...)
+from ._unitreport import units  # noqa: F401 - report.units(...)
+from .plans import report as plans  # noqa: F401 - report.plans(...)

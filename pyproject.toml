@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "giuggiai-meter"
-version = "0.1.1"
-description = "Per-call LLM usage logging, per-project cost reports and monthly reconciliation with provider bills"
+version = "0.2.0"
+description = "LLM cost control for apps and agents: per-call usage, budgets before the call, subscription plans, cost per accepted result, forecasts and monthly reconciliation"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "GiuggiAI", email = "oss@giuggiai.com"}]
-keywords = ["llm", "ai", "cost", "tokens", "finops", "openai", "anthropic", "gemini", "deepseek", "grok", "qwen"]
+keywords = ["llm", "ai", "cost", "tokens", "finops", "budget", "agents", "openai", "anthropic", "gemini", "deepseek", "grok", "qwen"]
 requires-python = ">=3.10"
 dependencies = []
 classifiers = [

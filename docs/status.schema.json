@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "giuggiai-meter status --json",
+  "type": "object",
+  "required": ["version", "currency", "budgets"],
+  "properties": {
+    "version": {"type": "string"},
+    "currency": {"type": "string"},
+    "budgets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["budget_id", "period", "spent", "limit", "remaining", "currency", "burn_per_day", "exhaust_date",
+                     "projected_period_end", "unpriced_calls", "state"],
+        "properties": {
+          "budget_id": {"type": "string"},
+          "period": {"enum": ["day", "week", "month", "total"]},
+          "spent": {"type": "number"},
+          "limit": {"type": "number"},
+          "remaining": {"type": "number"},
+          "currency": {"type": "string"},
+          "burn_per_day": {"type": "number", "description": "average daily spend over the last 7 days"},
+          "exhaust_date": {"type": ["string", "null"], "description": "YYYY-MM-DD; null when nothing is being spent"},
+          "projected_period_end": {"type": ["number", "null"], "description": "null for total budgets"},
+          "unpriced_calls": {"type": "integer"},
+          "state": {"enum": ["ok", "warn", "over"]}
+        }
+      }
+    }
+  }
+}

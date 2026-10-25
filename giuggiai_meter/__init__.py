@@ -34,9 +34,33 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-__version__ = "0.1.1"
-__all__ = ["connect", "db_path", "log_anthropic", "log_bedrock", "log_cohere", "log_deepseek", "log_gemini", "log_grok",
-           "log_mistral", "log_ollama", "log_openai", "log_perplexity", "log_qwen", "log_response", "log_usage", "wrap"]
+__version__ = "0.2.0"
+SCHEMA_VERSION = 2
+__all__ = [
+    "SCHEMA_VERSION",
+    "BudgetExceeded",
+    "check",
+    "check_remote",
+    "connect",
+    "db_path",
+    "log_anthropic",
+    "log_bedrock",
+    "log_cohere",
+    "log_deepseek",
+    "log_gemini",
+    "log_grok",
+    "log_mistral",
+    "log_ollama",
+    "log_openai",
+    "log_perplexity",
+    "log_qwen",
+    "log_response",
+    "log_usage",
+    "migrate",
+    "outcome",
+    "unit",
+    "wrap",
+]
 
 _LOCK = threading.Lock()
 
@@ -61,7 +85,53 @@ CREATE INDEX IF NOT EXISTS ix_usage_synced ON usage(synced);
 CREATE INDEX IF NOT EXISTS ix_usage_time ON usage(log_time);
 """
 FIELDS = ("request_id", "log_time", "slug", "provider", "model", "input_tokens", "output_tokens",
-          "cache_creation_tokens", "cache_read_tokens", "workspace", "source", "created_at")
+          "cache_creation_tokens", "cache_read_tokens", "workspace", "source", "created_at", "billing", "unit_id", "unit_kind")
+
+# Schema v2 (0.2.0): additive only. Columns are added with ALTER TABLE ADD COLUMN; nothing is ever dropped or rewritten,
+# so databases written by 0.1.x keep working and 0.1.x keeps reading and writing a migrated database.
+_V2_COLUMNS = (("billing", "TEXT"), ("unit_id", "TEXT"), ("unit_kind", "TEXT"))
+_V2_DDL = """
+CREATE TABLE IF NOT EXISTS outcomes(
+  unit_id TEXT PRIMARY KEY,
+  unit_kind TEXT,
+  accepted INTEGER,
+  score REAL,
+  log_time TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_usage_source_time ON usage(source, log_time);
+CREATE INDEX IF NOT EXISTS ix_usage_unit ON usage(unit_id);
+"""
+
+
+def _migrate(c: sqlite3.Connection) -> list[str]:
+    """Bring an open database to schema v2. Idempotent; returns what was added (empty when already current)."""
+    added = []
+    have = {r[1] for r in c.execute("PRAGMA table_info(usage)")}
+    for name, typ in _V2_COLUMNS:
+        if name not in have:
+            c.execute(f"ALTER TABLE usage ADD COLUMN {name} {typ}")
+            added.append(f"usage.{name}")
+    before = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
+    c.executescript(_V2_DDL)
+    after = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
+    added += sorted(after - before)
+    c.commit()
+    return added
+
+
+def migrate(path: str | None = None) -> dict:
+    """Create or upgrade the usage database to the current schema. Safe to run any number of times.
+
+    Returns {"path", "schema_version", "added": [...]}. Back up the file first if other programs write to it."""
+    p = path or db_path()
+    c = _init_db(p, migrate=False)
+    try:
+        added = _migrate(c)
+    finally:
+        c.close()
+    with _READY_LOCK:
+        _READY.add((os.getpid(), os.path.abspath(p)))
+    return {"path": os.path.abspath(p), "schema_version": SCHEMA_VERSION, "added": added}
 
 
 def db_path() -> str:
@@ -88,7 +158,7 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     return c
 
 
-def _init_db(p: str) -> sqlite3.Connection:
+def _init_db(p: str, migrate: bool = True) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(os.path.abspath(p)), mode=0o700, exist_ok=True)
     # create the database, -wal and -shm files as owner-only before SQLite opens them (no process-wide umask change)
     for f in (p, p + "-wal", p + "-shm"):
@@ -99,6 +169,8 @@ def _init_db(p: str) -> sqlite3.Connection:
     c = sqlite3.connect(p, timeout=10)
     c.execute("PRAGMA journal_mode=WAL;")
     c.executescript(_DDL)
+    if migrate:
+        _migrate(c)
     for f in (p, p + "-wal", p + "-shm"):
         try:
             os.chmod(f, 0o600)
@@ -167,9 +239,18 @@ def insert_row(row: dict, path: str | None = None) -> None:
 
 
 def log_usage(slug, provider=None, model=None, input_tokens=0, output_tokens=0, cache_creation_tokens=0,
-              cache_read_tokens=0, request_id=None, workspace=None, source=None, log_time=None):
-    """Record one model call. Idempotent on request_id. Never raises: returns the request_id or None."""
+              cache_read_tokens=0, request_id=None, workspace=None, source=None, log_time=None, billing=None,
+              unit_id=None, unit_kind=None):
+    """Record one model call. Idempotent on request_id. Never raises: returns the request_id or None.
+
+    `billing`: "api" (pay per token), "subscription:<plan id>" (covered by a flat plan) or "free"; when omitted the
+    plans in the budgets file decide at report time. `unit_id` / `unit_kind`: the unit of work this call belongs to
+    (default: the innermost `gm.unit(...)` block, then $GIUGGIAI_METER_UNIT)."""
     try:
+        if unit_id is None:
+            from ._units import current
+            unit_id, cur_kind = current()
+            unit_kind = unit_kind or cur_kind
         row = {
             "request_id": request_id or f"gm-{uuid.uuid4().hex}",
             "log_time": log_time or _now(),
@@ -183,6 +264,9 @@ def log_usage(slug, provider=None, model=None, input_tokens=0, output_tokens=0, 
             "workspace": workspace,
             "source": source or os.environ.get("GIUGGIAI_METER_SOURCE"),  # no hostname by default (privacy)
             "created_at": _now(),
+            "billing": billing,
+            "unit_id": None if unit_id is None else str(unit_id),
+            "unit_kind": unit_kind,
         }
         if _emit_http(row):  # remote ingest first when configured (containers, other hosts)
             return row["request_id"]
@@ -247,7 +331,7 @@ def log_perplexity(slug, response, model=None, workspace=None):
     return log_openai(slug, response, provider="Perplexity", model=model, workspace=workspace)
 
 
-def log_response(project, response, provider=None, model=None, workspace=None, fallback_model=None):
+def log_response(project, response, provider=None, model=None, workspace=None, fallback_model=None, source=None):
     """Record any supported LLM response, SDK object or raw JSON dict, recognised by its shape. Never raises.
 
     Shapes: OpenAI Chat Completions and every OpenAI-compatible API (prompt/completion tokens), OpenAI Responses API,
@@ -268,7 +352,7 @@ def log_response(project, response, provider=None, model=None, workspace=None, f
         return log_usage(project, provider=resolve_provider(provider, mdl, u["shape"]), model=mdl,
                          input_tokens=u["input_tokens"], output_tokens=u["output_tokens"],
                          cache_creation_tokens=u["cache_creation_tokens"], cache_read_tokens=u["cache_read_tokens"],
-                         request_id=rid, workspace=workspace)
+                         request_id=rid, workspace=workspace, source=source)
     except Exception as e:  # noqa: BLE001 - never break the caller
         _warn(f"[giuggiai_meter] log_response error: {e}\n")
         return None
@@ -309,4 +393,19 @@ def log_ollama(project, response, model=None, workspace=None):
     return log_response(project, response, provider="Ollama", model=model, workspace=workspace)
 
 
-from ._wrap import wrap  # imported last: it needs the log_* functions above
+def outcome(unit_id, accepted: bool, score: float | None = None, kind: str | None = None, db: str | None = None) -> bool:
+    """Record the result of a unit of work (accepted or rejected, optional score). The latest call wins.
+    Never raises: returns True when stored."""
+    try:
+        with _LOCK, contextlib.closing(connect(db)) as c, c:
+            c.execute("INSERT OR REPLACE INTO outcomes(unit_id, unit_kind, accepted, score, log_time) VALUES(?,?,?,?,?)",
+                      (str(unit_id), kind, 1 if accepted else 0, None if score is None else float(score), _now()))
+        return True
+    except Exception as e:  # noqa: BLE001 - never break the caller
+        _warn(f"[giuggiai_meter] outcome error: {e}\n")
+        return False
+
+
+from ._units import bind, unit  # noqa: F401
+from ._wrap import wrap
+from .budgets import BudgetExceeded, Decision, check, check_remote  # noqa: F401

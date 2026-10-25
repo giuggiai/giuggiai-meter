@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import functools
 import inspect
+import json
 import sys
 
 from . import providers
@@ -59,14 +60,50 @@ def _record(meter: dict, resp, kwargs: dict) -> None:
         prov = meter["provider"] or _usage.resolve_provider(None, u["model"] or model, u["shape"]) or meter["class_hint"]
         import giuggiai_meter as gm  # looked up at call time
 
-        gm.log_response(meter["project"], resp, provider=prov, workspace=meter["workspace"], fallback_model=model)
+        gm.log_response(meter["project"], resp, provider=prov, workspace=meter["workspace"], fallback_model=model,
+                        source=meter.get("source"))
     except Exception as e:  # noqa: BLE001 - never break the caller
         _warn("wrap: logging failed", e)
+
+
+def _estimate_tokens(kwargs: dict) -> tuple[int, int]:
+    """Rough (input, output) token estimate of a request: ~4 characters per token of the request body, and the
+    requested max output. Used only to judge a call against its budget before it runs."""
+    body = {k: v for k, v in kwargs.items() if k in ("messages", "input", "contents", "prompt", "system", "instructions")}
+    try:
+        n_in = len(json.dumps(body, default=str)) // 4
+    except Exception:  # noqa: BLE001
+        n_in = 0
+    n_out = next((int(kwargs[k]) for k in ("max_tokens", "max_output_tokens", "max_completion_tokens")
+                  if isinstance(kwargs.get(k), int)), 0)
+    return n_in, n_out
+
+
+def _guard(meter: dict, kwargs: dict) -> None:
+    """Apply the budgets before the call: raise BudgetExceeded on block, switch kwargs['model'] on degrade.
+    Any other failure lets the call through (the budgets' fail mode is applied inside check())."""
+    from .budgets import BudgetExceeded, check
+
+    try:
+        model = next((v for v in (kwargs.get("model"), kwargs.get("modelId")) if isinstance(v, str)), None)
+        n_in, n_out = _estimate_tokens(kwargs)
+        cfg = meter["budgets"]
+        d = check(meter["project"], model=model, provider=meter["provider"], source=meter.get("source"),
+                  input_tokens=n_in, output_tokens=n_out, config=None if cfg is True else cfg)
+    except Exception as e:  # noqa: BLE001 - a broken budget check never breaks the caller
+        _warn("wrap: budget check failed", e)
+        return
+    if d.action == "block":
+        raise BudgetExceeded(d)
+    if d.action == "degrade" and d.model:
+        kwargs["model" if "model" in kwargs or "modelId" not in kwargs else "modelId"] = d.model
 
 
 def _metered(fn, meter: dict):
     @functools.wraps(fn)
     def call(*args, **kwargs):
+        if meter.get("budgets") is not None:
+            _guard(meter, kwargs)
         if kwargs.get("stream"):  # streaming: passed through untouched, not recorded
             return fn(*args, **kwargs)
         result = fn(*args, **kwargs)
@@ -152,7 +189,8 @@ class MeteredClient:
         return await self._gm_target.__aexit__(*exc)
 
 
-def wrap(client, project: str, provider: str | None = None, workspace: str | None = None):
+def wrap(client, project: str, provider: str | None = None, workspace: str | None = None, budgets=None,
+         source: str | None = None):
     """Return `client` with automatic usage logging under `project`.
 
     Recorded calls (the SDK's response is returned unchanged):
@@ -176,10 +214,14 @@ def wrap(client, project: str, provider: str | None = None, workspace: str | Non
     `with_streaming_response`, batches, embeddings and every other method.
     Logging never raises: if recording fails, a line goes to stderr and the response is returned as usual.
     Everything else on the client behaves as on the original; `wrapped.__wrapped__` is the original client.
+
+    `budgets` (True = the default budgets file, or a path, or a dict): every recorded call is checked first
+    (see budgets.py). A blocked call raises `BudgetExceeded` without reaching the provider; a degraded call runs
+    on the budget's `degrade_to` model. `source` labels the calls (an agent, a job) for budgets and reports.
     """
     if isinstance(client, MeteredClient):
         client = client.__wrapped__
-    meter = {"project": str(project), "workspace": workspace,
+    meter = {"project": str(project), "workspace": workspace, "budgets": budgets, "source": source,
              "provider": providers.normalize(provider) if provider else detect_provider(client),
              "class_hint": None}
     with contextlib.suppress(Exception):

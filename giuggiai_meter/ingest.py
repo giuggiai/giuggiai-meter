@@ -2,6 +2,8 @@
 
 Run:  GIUGGIAI_METER_TOKEN=... python -m giuggiai_meter ingest [--host 127.0.0.1] [--port 8788]
 POST /ingest with header X-Meter-Token and a JSON row (request_id and slug required). GET /health -> {"ok": true}.
+GET /check?project=&model=&provider=&source=&estimate_usd= with X-Meter-Token -> the budget Decision as JSON, judged
+on this server's database with its budgets file ($GIUGGIAI_METER_BUDGETS) and price list ($GIUGGIAI_METER_PRICES).
 Binds to 127.0.0.1 by default. Outside localhost, put it behind a reverse proxy with HTTPS (the token travels in a header).
 """
 from __future__ import annotations
@@ -10,6 +12,7 @@ import hmac
 import json
 import os
 import sys
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import _now, insert_row
@@ -17,7 +20,7 @@ from . import _now, insert_row
 MAX_BODY = 65536
 MIN_TOKEN = 16
 _TEXT = {"request_id": 128, "log_time": 32, "slug": 128, "provider": 64, "model": 128, "workspace": 128,
-         "source": 128, "created_at": 32}
+         "source": 128, "created_at": 32, "billing": 64, "unit_id": 128, "unit_kind": 64}
 _INT = ("input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens")
 
 
@@ -49,7 +52,7 @@ def clean_row(row: object) -> dict:
     return out
 
 
-def make_handler(token: str, db: str | None = None):
+def make_handler(token: str, db: str | None = None, budgets=None, prices=None):
     if not token or len(token) < MIN_TOKEN:
         raise ValueError(f"the ingest token must be at least {MIN_TOKEN} characters")
     secret = token.encode()
@@ -65,17 +68,39 @@ def make_handler(token: str, db: str | None = None):
             self.end_headers()
             self.wfile.write(b)
 
+        def _authorized(self) -> bool:
+            given = self.headers.get("X-Meter-Token", "").encode("utf-8", "replace")
+            return hmac.compare_digest(given, secret)
+
         def do_GET(self):
             if self.path == "/health":
                 return self._send(200, {"ok": True})
+            url = urllib.parse.urlsplit(self.path)
+            if url.path.rstrip("/") == "/check":
+                if not self._authorized():
+                    return self._send(401, {"error": "unauthorized"})
+                try:
+                    q = {k: v[0][:128] for k, v in urllib.parse.parse_qs(url.query).items()}
+                    est = float(q.get("estimate_usd") or 0)
+                    if not (0 <= est < 1e6):
+                        raise ValueError("estimate_usd out of range")
+                    from .budgets import check
+
+                    d = check(q.get("project", ""), model=q.get("model"), provider=q.get("provider"),
+                              source=q.get("source"), estimate_usd=est, db=db, config=budgets, prices=prices)
+                    return self._send(200, d.to_dict())
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)[:200]})
+                except Exception as e:  # noqa: BLE001
+                    sys.stderr.write(f"[giuggiai_meter] check error: {type(e).__name__}\n")
+                    return self._send(500, {"error": "internal error"})
             return self._send(404, {"error": "not found"})
 
         def do_POST(self):
             try:
                 if self.path.rstrip("/") != "/ingest":
                     return self._send(404, {"error": "not found"})
-                given = self.headers.get("X-Meter-Token", "").encode("utf-8", "replace")
-                if not hmac.compare_digest(given, secret):
+                if not self._authorized():
                     return self._send(401, {"error": "unauthorized"})
                 try:
                     n = int(self.headers.get("Content-Length", ""))

@@ -6,11 +6,17 @@
   reconcile  --month YYYY-MM --official Provider=USD ...   computed vs official monthly cost per provider
   ingest     [--host 127.0.0.1] [--port 8788]              HTTP ingest server (needs GIUGGIAI_METER_TOKEN)
   log        --slug S --provider P --model M --input N --output N    record one call by hand (tests, scripts)
+  status     [--json] [--budgets FILE] [--prices FILE]      budgets: spend, burn rate, run-out date (exit 0 ok, 1 warn, 2 over)
+  advise     --kind K [--min-n 20] [--max-drop 0.05] [--current MODEL]   is a cheaper model as good for this kind of work?
+  units      [--kind K] [--month YYYY-MM] [--csv]           cost per unit of work and per accepted unit
+  plans      [--month YYYY-MM] [--budgets FILE]             subscription plans: list-price value vs monthly fee
+  migrate    [--db FILE]                                    upgrade the database schema (additive, safe to repeat)
 """
 from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import random
 import sys
@@ -98,18 +104,77 @@ def demo_rows(month: str, seed: int = 7) -> list[dict]:
     return out
 
 
+DEMO_BUDGETS = {
+    "currency": "USD",
+    "budgets": [
+        {"id": "research-agent", "match": {"project": "research-agent"}, "limit": 60, "period": "month",
+         "warn_at": 0.8, "on_exceed": "degrade", "degrade_to": "example-small", "block_at": 90},
+        {"id": "support-bot", "match": {"project": "support-bot"}, "limit": 40, "period": "month", "warn_at": 0.8},
+        {"id": "prepaid-credit", "match": {"provider": "Anthropic"}, "limit": 150, "period": "total", "fail": "closed"},
+    ],
+    "plans": [{"id": "coding-plan", "monthly_fee": 20, "match": {"source": "ide/*"}}],
+}
+
+
+def demo_governance_rows(month: str, seed: int = 11) -> tuple[list[dict], list[tuple]]:
+    """Fake calls covered by a plan, and units of work with outcomes (two models doing the same kind of job)."""
+    rnd = random.Random(seed)
+    y, m = (int(x) for x in month.split("-"))
+    rows, outcomes = [], []
+    for k in range(120):  # calls from an IDE covered by a flat coding plan
+        t = f"{y:04d}-{m:02d}-{rnd.randint(1, 20):02d} 10:{rnd.randint(0, 59):02d}:00"
+        rows.append({"request_id": f"gm-demo-ide-{k}", "log_time": t, "slug": "dev-tools", "provider": "Anthropic",
+                     "model": "example-large", "input_tokens": rnd.randint(8_000, 30_000),
+                     "output_tokens": rnd.randint(500, 3_000), "cache_creation_tokens": 0, "cache_read_tokens": 0,
+                     "workspace": None, "source": "ide/editor", "created_at": t})
+    for model, n, rate, (i0, i1) in (("example-large", 45, 0.9, (3_000, 9_000)), ("example-small", 40, 0.88, (3_000, 9_000))):
+        for k in range(n):
+            uid = f"ticket-{model}-{k}"
+            t = f"{y:04d}-{m:02d}-{rnd.randint(1, 20):02d} 15:{rnd.randint(0, 59):02d}:00"
+            rows.append({"request_id": f"gm-demo-unit-{uid}", "log_time": t, "slug": "support-bot",
+                         "provider": "Anthropic" if model == "example-large" else "OpenAI", "model": model,
+                         "input_tokens": rnd.randint(i0, i1), "output_tokens": rnd.randint(300, 900),
+                         "cache_creation_tokens": 0, "cache_read_tokens": 0, "workspace": None, "source": "demo",
+                         "created_at": t, "unit_id": uid, "unit_kind": "support-reply"})
+            outcomes.append((uid, rnd.random() < rate))
+    return rows, outcomes
+
+
+def governance_for(month: str, idx: dict, config, db: str | None = None, kind: str | None = None) -> dict:
+    """Budgets, forecast, plans and cost per result for the HTML report."""
+    from . import forecast as F
+    from .advise import advise
+
+    g = {"budgets": F.status(config, idx, db), "plans": R.plans(month, idx, config, db),
+         "units": R.units(idx, db, month=month)}
+    kinds = sorted({u["kind"] for u in g["units"]}) if kind is None else [kind]
+    advice = [advise(k, idx, db) for k in kinds]
+    g["advice"] = " ".join(f"{k}: {a['recommend']} instead of {a['current']} - {a['reason']}." if a["recommend"]
+                           else f"{k}: keep {a['current']} ({a['reason']})." for k, a in zip(kinds, advice))
+    return g
+
+
 def cmd_demo(out_path: str, month: str) -> int:
+    from . import outcome
+
     idx = P.load_example()
     with tempfile.TemporaryDirectory(prefix="giuggiai-meter-demo-") as td:
         db = os.path.join(td, "demo.db")
         for row in demo_rows(month):
             insert_row(row, db)
+        extra, outs = demo_governance_rows(month)
+        for row in extra:
+            insert_row(row, db)
+        for uid, ok in outs:
+            outcome(uid, ok, kind="support-reply", db=db)
         rows = R.monthly(month, idx, db)
         missing = R.unpriced(month, idx, db)
+        gov = governance_for(month, idx, DEMO_BUDGETS, db)
     computed = {r["provider"]: r["computed_usd"] for r in R.reconcile(rows, {})}
     # pretend console totals: one matches, one is a little higher (unmetered calls), one has no figure
     official = {"Anthropic": round(computed.get("Anthropic", 0) * 1.02, 2), "OpenAI": round(computed.get("OpenAI", 0) * 1.18, 2)}
-    html = R.to_html(rows, month, R.reconcile(rows, official), missing, title=f"Demo · LLM costs · {month_label(month)}")
+    html = R.to_html(rows, month, R.reconcile(rows, official), missing, title=f"Demo · LLM costs · {month_label(month)}",
+                     governance=gov)
     print(R.to_table(rows))
     print(f"\nDemo report (fake data, example prices): {_write(out_path, html)}")
     return 0
@@ -132,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     fmt.add_argument("--html", metavar="FILE", help="write a self-contained HTML report to FILE")
     r.add_argument("--official", nargs="+", default=[], metavar="Provider=USD", help="official totals (HTML report)")
     r.add_argument("--prices")
+    r.add_argument("--budgets", help="add budgets, forecast, plans and cost per result to the HTML report")
     c = sub.add_parser("reconcile", help="computed vs official monthly cost per provider")
     c.add_argument("--month", default=this_month)
     c.add_argument("--official", nargs="+", default=[], metavar="Provider=USD")
@@ -144,6 +210,28 @@ def main(argv: list[str] | None = None) -> int:
         lg.add_argument(f"--{k}", required=k == "slug")
     lg.add_argument("--input", type=int, default=0)
     lg.add_argument("--output", type=int, default=0)
+    st = sub.add_parser("status", help="budgets: spend, burn rate and run-out date (exit 0 ok, 1 warn, 2 over)")
+    st.add_argument("--json", action="store_true")
+    st.add_argument("--budgets")
+    st.add_argument("--prices")
+    ad = sub.add_parser("advise", help="recommend a cheaper model for a kind of work, from recorded outcomes")
+    ad.add_argument("--kind", required=True)
+    ad.add_argument("--min-n", type=int, default=20)
+    ad.add_argument("--max-drop", type=float, default=0.05)
+    ad.add_argument("--current")
+    ad.add_argument("--prices")
+    ad.add_argument("--json", action="store_true")
+    un = sub.add_parser("units", help="cost per unit of work and per accepted unit")
+    un.add_argument("--kind")
+    un.add_argument("--month")
+    un.add_argument("--csv", action="store_true")
+    un.add_argument("--prices")
+    pl = sub.add_parser("plans", help="subscription plans: list-price value of the covered calls vs the monthly fee")
+    pl.add_argument("--month", default=this_month)
+    pl.add_argument("--budgets")
+    pl.add_argument("--prices")
+    mg = sub.add_parser("migrate", help="upgrade the database schema (additive, safe to repeat)")
+    mg.add_argument("--db")
     a = ap.parse_args(argv)
 
     if a.cmd == "init":
@@ -152,6 +240,45 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_demo(a.out, a.month)
     if a.cmd == "log":
         print(log_usage(a.slug, a.provider, a.model, input_tokens=a.input, output_tokens=a.output))
+        return 0
+    if a.cmd == "migrate":
+        from . import migrate
+
+        print(json.dumps(migrate(a.db)))
+        return 0
+    if a.cmd == "status":
+        from . import budgets as B
+        from . import forecast as F
+
+        cfg_path = a.budgets or B.budgets_path()
+        if not Path(cfg_path).exists():
+            raise SystemExit(f"budgets file not found: {cfg_path} (see examples/budgets.example.json)")
+        rows = F.status(cfg_path, a.prices)
+        print(json.dumps({"version": __version__, "currency": B.load(cfg_path)["currency"], "budgets": rows}, indent=2)
+              if a.json else R.to_table(rows))
+        return F.exit_code(rows)
+    if a.cmd in ("advise", "units", "plans"):
+        try:
+            idx = P.load(a.prices)
+        except FileNotFoundError as e:
+            raise SystemExit(f"price list not found: {e.filename} (run `giuggiai-meter init` to create one)") from None
+        if a.cmd == "advise":
+            from .advise import advise
+
+            res = advise(a.kind, idx, min_n=a.min_n, max_drop=a.max_drop, current=a.current)
+            if a.json:
+                print(json.dumps(res, indent=2))
+            else:
+                print(R.to_table(res["table"]))
+                print(f"\nrecommend: {res['recommend'] or '(keep ' + str(res['current']) + ')'} - {res['reason']}")
+            return 0
+        if a.cmd == "units":
+            rows = R.units(idx, kind=a.kind, month=a.month)
+            print(R.to_csv(rows) if a.csv else R.to_table(rows))
+            return 0
+        from . import budgets as B
+
+        print(R.to_table(R.plans(a.month, idx, a.budgets or B.budgets_path())))
         return 0
     if a.cmd == "ingest":
         from .ingest import serve
@@ -166,7 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "report":
         if a.html:
             rec = R.reconcile(rows, official) if official else None
-            print(_write(a.html, R.to_html(rows, a.month, rec, R.unpriced(a.month, idx))))
+            gov = governance_for(a.month, idx, a.budgets) if a.budgets else None
+            print(_write(a.html, R.to_html(rows, a.month, rec, R.unpriced(a.month, idx), governance=gov)))
         else:
             print(R.to_csv(rows) if a.csv else R.to_table(rows))
         return 0
