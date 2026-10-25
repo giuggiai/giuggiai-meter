@@ -173,7 +173,11 @@ def connect(path: str | None = None) -> sqlite3.Connection:
         return sqlite3.connect(p, timeout=10)
     with _READY_LOCK:
         c = _init_db(p)
-        _READY.add(key)
+        try:
+            if _has_v2(c):  # an upgrade postponed by a busy database is retried on the next connect
+                _READY.add(key)
+        except sqlite3.Error:
+            pass
     return c
 
 
@@ -256,7 +260,7 @@ def _emit_http(row: dict) -> bool:
 _V1_FIELDS = FIELDS[:12]
 
 
-def _busy_retry(fn, attempts: int = 6, optional: bool = False):
+def _busy_retry(fn, attempts: int = 3, optional: bool = False):
     """Run fn, retrying when SQLite reports the file busy or locked (another process is setting it up or writing)."""
     for k in range(attempts):
         try:

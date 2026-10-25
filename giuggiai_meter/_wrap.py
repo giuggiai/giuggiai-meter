@@ -100,7 +100,7 @@ def _guard(meter: dict, kwargs: dict) -> None:
 
 
 def _metered(fn, meter: dict):
-    if meter.get("budgets") is not None and inspect.iscoroutinefunction(fn):
+    if meter.get("budgets") is not None and inspect.iscoroutinefunction(inspect.unwrap(fn)):
         @functools.wraps(fn)
         async def acall(*args, **kwargs):  # async clients: the budget check runs off the event loop
             await asyncio.to_thread(_guard, meter, kwargs)

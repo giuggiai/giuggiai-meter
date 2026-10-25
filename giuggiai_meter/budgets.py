@@ -32,7 +32,6 @@ Rules
 """
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import datetime
 import fnmatch
@@ -99,7 +98,10 @@ def parse(data: dict) -> dict:
         raise BudgetError("fx values must be positive")
     fx.setdefault(cur, 1.0)
     if cur != "USD" and "USD" not in fx and (data.get("budgets") or data.get("plans")):
-        raise BudgetError(f"currency is {cur}: fx.USD (units of {cur} per USD) is required, prices are in USD")
+        from . import _warn
+
+        _warn(f"[giuggiai_meter] budgets in {cur} without fx.USD: USD prices are counted 1:1 as {cur}; add \"fx\": "
+              f"{{\"USD\": <{cur} per USD>}}")
     out = []
     for b in data.get("budgets") or []:
         if not isinstance(b, dict) or not b.get("id"):
@@ -269,17 +271,18 @@ class Ledger:
                         self._reset()
                 self.file_id = fid
                 billing = "billing" if "billing" in cols else "NULL"
+                top = c.execute("SELECT rowid, request_id FROM usage ORDER BY rowid DESC LIMIT 1").fetchone()
                 rows = c.execute(
                     f"SELECT rowid, log_time, slug, source, provider, model, input_tokens, output_tokens, "
                     f"cache_creation_tokens, cache_read_tokens, {billing}, request_id FROM usage "
-                    f"WHERE rowid > ? ORDER BY rowid", (self.last_rowid,)).fetchall()
+                    f"WHERE rowid > ? AND rowid <= ? AND log_time >= ? ORDER BY rowid",
+                    (self.last_rowid, top[0] if top else 0, self.min_day)).fetchall()
             finally:
                 c.close()
             budgets, plans = self.cfg["budgets"], self.cfg["plans"]
-            for rid, t, slug, src, prov, model, it, ot, cw, cr, bill, req in rows:
-                self.last_rowid, self.last_request_id = rid, req
-                if (t or "")[:10] < self.min_day:
-                    continue
+            if top:
+                self.last_rowid, self.last_request_id = top
+            for _rid, t, slug, src, prov, model, it, ot, cw, cr, bill, _req in rows:
                 row = {"project": slug, "source": src, "provider": prov, "model": model, "billing": bill}
                 hit = [b for b in budgets if matches(b["match"], row)]
                 if not hit:
@@ -322,13 +325,17 @@ def ledger(db: str | None, cfg: dict, idx: dict, today: datetime.date | None = N
 
     path = os.path.abspath(db or db_path())
     first = horizon(cfg, today or datetime.date.today())
-    key = (path, id(cfg), id(idx), first)
+    key = (path, id(cfg), id(idx))
     with _LEDGERS_LOCK:
         led = _LEDGERS.get(key)
         if led is None:
             if len(_LEDGERS) > 32:
                 _LEDGERS.clear()
             led = _LEDGERS[key] = Ledger(path, cfg, idx, first)
+        elif first < led.min_day:  # asked about an older window than what was read: read further back once
+            with led.lock:
+                led.min_day = first
+                led._reset()
     led.refresh()
     return led
 
@@ -365,20 +372,12 @@ def _judge(b: dict, spent: float, est: float, model: str | None, cur: str) -> De
 
 def check(project, model=None, provider=None, source=None, estimate_usd=0.0, input_tokens=0, output_tokens=0,
           db=None, config=None, prices=None, today: datetime.date | None = None) -> Decision:
-    """Decide whether a call may run. Never raises for a missing or unreadable database: the budgets' `fail`
-    mode decides. Raises BudgetError only for a malformed budgets file passed explicitly."""
-    stale = ""
-    try:
-        cfg = _config(config)
-    except Exception as e:  # noqa: BLE001 - malformed or unreadable budgets: never raise into the caller
-        key = budgets_path() if config is None else str(config) if isinstance(config, (str, os.PathLike)) else None
-        if key not in _LAST_GOOD:
-            return _unreadable_decision(model, e)
-        cfg = _LAST_GOOD[key]  # the file broke after a good read: keep enforcing the last good budgets
-        stale = f" (budgets file unreadable, last good version applied: {type(e).__name__})"
-        from . import _warn
-
-        _warn(f"[giuggiai_meter] budgets unreadable, using the last good version: {type(e).__name__}: {str(e)[:120]}")
+    """Decide whether a call may run. Never raises: a missing or unreadable database or price list applies the
+    budgets' `fail` mode; an unreadable budgets file applies its last good version, else $GIUGGIAI_METER_BUDGETS_FAIL."""
+    cfg = _local_config(config, model)
+    if isinstance(cfg, Decision):
+        return cfg
+    stale = cfg.get("_stale", "")
     cur = cfg["currency"]
     from .providers import normalize
 
@@ -398,6 +397,21 @@ def check(project, model=None, provider=None, source=None, estimate_usd=0.0, inp
     if stale:
         d.reason = (d.reason or d.action) + stale
     return d
+
+
+def _local_config(config, model):
+    """The budgets to apply, or a Decision when they cannot be read. A file that breaks after a good read keeps its
+    last good version (marked with _stale); with none, $GIUGGIAI_METER_BUDGETS_FAIL decides. Never raises."""
+    try:
+        return _config(config)
+    except Exception as e:  # noqa: BLE001 - malformed or unreadable budgets: never raise into the caller
+        key = budgets_path() if config is None else str(config) if isinstance(config, (str, os.PathLike)) else None
+        if key not in _LAST_GOOD:
+            return _unreadable_decision(model, e)
+        from . import _warn
+
+        _warn(f"[giuggiai_meter] budgets unreadable, using the last good version: {type(e).__name__}: {str(e)[:120]}")
+        return {**_LAST_GOOD[key], "_stale": f" (budgets file unreadable, last good version applied: {type(e).__name__})"}
 
 
 def _unreadable_decision(model, err: Exception) -> Decision:
@@ -457,12 +471,15 @@ def check_remote(project, model=None, provider=None, source=None, estimate_usd=0
         return Decision(**{f.name: d.get(f.name) for f in dataclasses.fields(Decision) if f.name in d})
     except Exception as e:  # noqa: BLE001 - unreachable meter: fail mode
         why = f"meter unreachable ({type(e).__name__})"
-        cfg = None
-        with contextlib.suppress(Exception):
-            cfg = _config(config)
-        if cfg:
-            row = {"project": project, "source": source, "provider": provider, "model": model}
-            hit = [b for b in cfg["budgets"] if matches(b["match"], row)]
-            if hit:
-                return fail_decision(hit, model, cfg["currency"], why)
+        cfg = _local_config(config, model)
+        if isinstance(cfg, Decision):  # local budgets unreadable: same rule as check()
+            cfg.reason = f"{why}; {cfg.reason}"
+            return cfg
+        from .providers import normalize
+
+        row = {"project": project, "source": source, "provider": normalize(provider) if provider else provider,
+               "model": model}
+        hit = [b for b in cfg["budgets"] if matches(b["match"], row)]
+        if hit:
+            return fail_decision(hit, model, cfg["currency"], why)
         return Decision(True, "allow", model, reason=why)

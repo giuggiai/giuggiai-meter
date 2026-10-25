@@ -27,7 +27,9 @@ forecast when a budget runs out. Still pure standard library; everything new is 
 - Robustness: concurrent schema upgrades from several processes lose no rows (one write transaction, rows fall back to
   the v1 columns if the upgrade must wait); the in-memory totals are recounted when the database is recreated or
   restored; a missing price list or an unreadable budgets file applies the fail modes instead of reading as zero
-  spend (`GIUGGIAI_METER_BUDGETS_FAIL`); `billing`, `fx`, `warn_at`, `block_at` and `limit` are validated.
+  spend (`GIUGGIAI_METER_BUDGETS_FAIL`); `billing`, `warn_at`, `block_at` and `limit` are validated (a non-USD currency without `fx.USD` warns);
+  `check_remote` applies the same rules as `check()` when the server cannot be reached; async SDK methods behind
+  sync decorators also run the budget check off the event loop.
 
 ### Changed
 - Database schema v2 (`gm.SCHEMA_VERSION`): columns `usage.billing`, `usage.unit_id`, `usage.unit_kind`, table

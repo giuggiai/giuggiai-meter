@@ -160,7 +160,6 @@ def test_unknown_billing_not_stored():
 
 
 @pytest.mark.parametrize("bad", [
-    {"currency": "EUR", "budgets": [{"id": "x", "limit": 1}]},                 # fx.USD missing
     {"fx": {"USD": "abc"}, "budgets": [{"id": "x", "limit": 1}]},
     {"fx": {"USD": -1}, "budgets": [{"id": "x", "limit": 1}]},
     {"budgets": [{"id": "x", "limit": -1}]},
@@ -178,3 +177,69 @@ def test_check_remote_rejects_non_http(monkeypatch):
     monkeypatch.setenv("GIUGGIAI_METER_TOKEN", "x" * 20)
     d = gm.check_remote("p", model="big")
     assert d.allow and "unreachable" in d.reason
+
+
+def test_currency_without_fx_warns(capsys):
+    cfg_ = B.parse({"currency": "EUR", "budgets": [{"id": "x", "limit": 1}]})
+    assert cfg_["fx"] == {"EUR": 1.0} and "without fx.USD" in capsys.readouterr().err
+
+
+def test_remote_unreachable_applies_local_closed_budget_in_other_currency(monkeypatch):
+    monkeypatch.setenv("GIUGGIAI_METER_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("GIUGGIAI_METER_TOKEN", "x" * 20)
+    local = {"currency": "EUR", "budgets": [{"id": "b", "limit": 5, "fail": "closed"}]}
+    assert not gm.check_remote("p", model="big", config=local).allow
+
+
+def test_remote_unreachable_with_broken_local_budgets(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIUGGIAI_METER_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("GIUGGIAI_METER_TOKEN", "x" * 20)
+    (tmp_path / "budgets.json").write_text("{ broken")
+    assert gm.check_remote("p", model="big").allow
+    monkeypatch.setenv("GIUGGIAI_METER_BUDGETS_FAIL", "closed")
+    d = gm.check_remote("p", model="big")
+    assert not d.allow and "unreachable" in d.reason
+
+
+def test_async_guard_runs_off_the_loop_with_decorated_methods():
+    import asyncio
+    import functools
+    import threading
+    from types import SimpleNamespace
+
+    from giuggiai_meter import _wrap
+
+    seen = []
+    real_guard = _wrap._guard
+
+    def spy(meter, kwargs):
+        seen.append(threading.current_thread() is threading.main_thread())
+        return real_guard(meter, kwargs)
+
+    async def create(**kw):
+        return {"model": kw["model"], "id": "x", "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    def sdk_decorator(fn):  # like the SDKs: a sync wrapper around the coroutine function
+        @functools.wraps(fn)
+        def inner(*a, **k):
+            return fn(*a, **k)
+        return inner
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=sdk_decorator(create))),
+                             base_url="https://api.openai.com/v1")
+    _wrap._guard = spy
+    try:
+        asyncio.run(gm.wrap(client, project="p", budgets=cfg({"id": "b", "limit": 99})).chat.completions.create(
+            model="big", messages=[]))
+    finally:
+        _wrap._guard = real_guard
+    assert seen == [False]
+
+
+def test_ledger_widens_for_an_older_window():
+    import datetime
+
+    spend(4, day="2026-09-10")
+    c = cfg({"id": "b", "limit": 100, "period": "month"})
+    assert gm.check("p", model="big", config=c, today=TODAY).spent == pytest.approx(0)          # October
+    assert gm.check("p", model="big", config=c, today=datetime.date(2026, 9, 20)).spent == pytest.approx(4)
