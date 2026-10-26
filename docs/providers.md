@@ -19,10 +19,14 @@
 
 Any other OpenAI-compatible endpoint works too: pass `provider="Name"` to `wrap` if its host is not in the table.
 
+## Streams and raw responses (0.2.1)
+
+Streaming (`stream=True`, `.stream(...)`, `generate_content_stream`, `converse_stream`, `chat_stream`, `stream_async`) passes through event by event and is recorded when the stream ends, is closed or its `with` block is left, with the usage found in the events: OpenAI chat chunks (the meter sets `stream_options={"include_usage": True}` on the official OpenAI API unless you set `stream_options`), OpenAI Responses `response.completed`, Anthropic `message_start` + `message_delta`, Gemini `usage_metadata`, Bedrock `metadata`, Mistral, Cohere `message-end`, Ollama. When no usage arrives, the row is an estimate (request size and streamed text, ~4 characters per token; `request_id` starting with `gm-est-`).
+`with_raw_response` / `with_streaming_response` are checked like the plain methods and recorded when the response is parsed.
+
 ## Not recorded (passed through untouched)
 
-Streaming (`stream=True`, `.stream(...)`, `generate_content_stream`, `converse_stream`, `chat_stream`, `stream_async`), `with_raw_response` / `with_streaming_response`, batches and embeddings.
-For those, log by hand: `gm.log_usage(project, provider, model, input_tokens=..., output_tokens=...)`.
+Batches and embeddings. For those, log by hand: `gm.log_usage(project, provider, model, input_tokens=..., output_tokens=...)`.
 
 ## Token convention
 
