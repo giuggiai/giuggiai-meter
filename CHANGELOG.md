@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - unreleased
+
+Budgets could be bypassed in ordinary use. 0.2.1 closes those paths; no API is removed and the database schema is
+unchanged.
+
+### Fixed
+- **Remote hosts**: on a host that logs through the ingest (`GIUGGIAI_METER_URL`), `wrap(..., budgets=...)` judged calls on
+  a local database that does not exist there, so every call passed. It now asks the ingest server (`check_remote`). When
+  the server cannot answer, the fail mode of the budget it last applied to that call decides, then a local budgets file,
+  then `GIUGGIAI_METER_BUDGETS_FAIL`: never "always allow" by accident. A refused token (401/403) is reported on stderr.
+  `GET /check` and `check_remote` also take `input_tokens` / `output_tokens` (priced by the server).
+- **Streams and raw responses**: `stream=True` calls were checked but never recorded, and `.stream(...)`, `*_stream`,
+  `with_raw_response` and `with_streaming_response` were not even checked. All are now checked before the call and
+  recorded when the stream ends, is closed or its `with` block is left, with the usage sent in the stream (requested
+  with `stream_options.include_usage` on the official OpenAI API) or an estimate (`request_id` `gm-est-...`).
+- **Attribution**: the check now sees the same source and provider as the usage row (`GIUGGIAI_METER_SOURCE`; provider
+  from the model id when the client does not name one), so budgets matched on `source` or `provider` apply.
+- **Unpriced models**: a model missing from the price list counted 0, even for `fail: closed`. Now a `fail: closed`
+  budget blocks (this call's model, or calls in the window without a price) and a `fail: open` budget warns.
+- **Clock skew**: rows dated up to one day ahead (another time zone, a UTC timestamp) now count in the current window
+  instead of disappearing until the next day.
+- **Plans**: `billing="subscription:<id>"` counts 0 only when `<id>` is a plan of the budgets file; otherwise it is paid
+  per token, with a warning.
+
+### Changed
+- A usage database that does not exist yet reads as zero spend (nothing recorded) instead of applying the fail mode:
+  `fail: closed` no longer blocks the first call of a fresh install forever.
+- `Decision` has a new field `fail` (the deciding budget's fail mode).
+- README: a "Known limitations" section.
+
 ## [0.2.0] - 2026-10-25
 
 From counting to control: the meter can now decide before a call, value subscriptions, measure cost per result and
