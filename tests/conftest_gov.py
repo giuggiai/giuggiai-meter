@@ -21,8 +21,13 @@ def setup_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GIUGGIAI_METER_DB", str(db))
     monkeypatch.setenv("GIUGGIAI_METER_PRICES", str(prices))
     monkeypatch.setenv("GIUGGIAI_METER_BUDGETS", str(tmp_path / "budgets.json"))
-    for k in ("GIUGGIAI_METER_URL", "GIUGGIAI_METER_TOKEN", "GIUGGIAI_METER_UNIT", "GIUGGIAI_METER_UNIT_KIND"):
+    for k in ("GIUGGIAI_METER_URL", "GIUGGIAI_METER_TOKEN", "GIUGGIAI_METER_UNIT", "GIUGGIAI_METER_UNIT_KIND",
+              "GIUGGIAI_METER_SOURCE"):
         monkeypatch.delenv(k, raising=False)
+    from giuggiai_meter import budgets as B
+
+    B._REMOTE_FAIL.clear()  # what a remote meter said in an earlier test must not leak into this one
+    monkeypatch.setattr(B, "_remote_down_until", 0.0)
     return str(db), str(prices)
 
 

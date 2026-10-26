@@ -2,8 +2,8 @@
 
 Run:  GIUGGIAI_METER_TOKEN=... python -m giuggiai_meter ingest [--host 127.0.0.1] [--port 8788]
 POST /ingest with header X-Meter-Token and a JSON row (request_id and slug required). GET /health -> {"ok": true}.
-GET /check?project=&model=&provider=&source=&estimate_usd= with X-Meter-Token -> the budget Decision as JSON, judged
-on this server's database with its budgets file ($GIUGGIAI_METER_BUDGETS) and price list ($GIUGGIAI_METER_PRICES).
+GET /check?project=&model=&provider=&source=&estimate_usd=&input_tokens=&output_tokens= with X-Meter-Token -> the
+budget Decision as JSON, judged on this server's database with its budgets file ($GIUGGIAI_METER_BUDGETS) and price list ($GIUGGIAI_METER_PRICES).
 Binds to 127.0.0.1 by default. Outside localhost, put it behind a reverse proxy with HTTPS (the token travels in a header).
 """
 from __future__ import annotations
@@ -84,10 +84,15 @@ def make_handler(token: str, db: str | None = None, budgets=None, prices=None):
                     est = float(q.get("estimate_usd") or 0)
                     if not (0 <= est < 1e6):
                         raise ValueError("estimate_usd out of range")
+                    toks = [int(q.get(k) or 0) for k in ("input_tokens", "output_tokens")]
+                    if not all(0 <= t < 10**9 for t in toks):
+                        raise ValueError("token counts out of range")
                     from .budgets import check
 
+                    # source "" when absent: the client's source, never this server's own $GIUGGIAI_METER_SOURCE
                     d = check(q.get("project", ""), model=q.get("model"), provider=q.get("provider"),
-                              source=q.get("source"), estimate_usd=est, db=db, config=budgets, prices=prices)
+                              source=q.get("source", ""), estimate_usd=est, input_tokens=toks[0],
+                              output_tokens=toks[1], db=db, config=budgets, prices=prices)
                     return self._send(200, d.to_dict())
                 except ValueError as e:
                     return self._send(400, {"error": str(e)[:200]})

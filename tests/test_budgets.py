@@ -198,14 +198,15 @@ def test_incremental_ledger_sees_new_rows():
     assert chk(c, model="big").action == "block"
 
 
-def test_fail_open_default_when_db_missing(tmp_path):
+def test_missing_db_means_nothing_recorded_yet_fail_open(tmp_path):
     d = chk(cfg({"id": "b", "limit": 5}), model="big", db=str(tmp_path / "nope.db"))
-    assert d.allow and "failing open" in d.reason
+    assert d.allow and d.spent == 0
 
 
-def test_fail_closed_when_db_missing(tmp_path):
+def test_missing_db_does_not_lock_a_fail_closed_budget_forever(tmp_path):
+    # a fresh install has no database until the first call is logged: fail=closed must not block that first call
     d = chk(cfg({"id": "b", "limit": 5, "fail": "closed"}), model="big", db=str(tmp_path / "nope.db"))
-    assert not d.allow and d.action == "block"
+    assert d.allow and d.action == "allow" and d.spent == 0
 
 
 def test_fail_closed_when_db_broken(tmp_path):
@@ -225,7 +226,8 @@ def test_check_never_writes(env):
 
 def test_decision_to_dict():
     d = chk(cfg({"id": "b", "limit": 5}), model="big")
-    assert set(d.to_dict()) == {"allow", "action", "model", "budget_id", "spent", "limit", "remaining", "currency", "reason"}
+    assert set(d.to_dict()) == {"allow", "action", "model", "budget_id", "spent", "limit", "remaining", "currency", "reason",
+                                "fail"}
 
 
 # ------------------------------------------------------------------ wrap
