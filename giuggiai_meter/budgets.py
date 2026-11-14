@@ -25,7 +25,11 @@ Rules
 - Spend counts what you pay per token: calls covered by a plan (see plans.py) or marked billing="free" count 0.
 - `on_exceed` at `limit`: "block" (deny), "degrade" (allow on `degrade_to`; deny from `block_at`, if set) or
   "warn" (allow, flagged). `warn_at` (0-1) flags the call earlier. A call is judged with its estimate added.
-- `fail`: what to do when the spend cannot be read (missing or broken database): "open" (default, allow) or "closed".
+- `fail`: what to do when the spend cannot be read (broken or locked database, no price list) or cannot be priced
+  (a model missing from the price list): "open" (default, allow and warn) or "closed" (block). A database that does
+  not exist yet means nothing was recorded: spend 0.
+- Calls are matched the way they are logged: `source` defaults to $GIUGGIAI_METER_SOURCE and a missing `provider` is
+  taken from the model id, so a budget sees the same project / source / provider / model as the usage rows.
 - check() never writes to the database. Running totals are kept in the memory of the process and refreshed from
   the rows added since the previous check (by rowid), so a check costs one small indexed query.
 - check() and the call are not atomic: with N calls in flight at once, a budget can be overshot by up to N estimates.
@@ -66,6 +70,7 @@ class Decision:
     remaining: float | None = None
     currency: str = "USD"
     reason: str = ""
+    fail: str | None = None  # fail mode of the deciding budget ("open" | "closed"), used by check_remote offline
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -253,6 +258,7 @@ class Ledger:
         self.file_id = None
         self.days: dict[str, dict[str, float]] = {b["id"]: {} for b in self.cfg["budgets"]}
         self.unpriced: dict[str, int] = {b["id"]: 0 for b in self.cfg["budgets"]}
+        self.unpriced_days: dict[str, dict[str, int]] = {b["id"]: {} for b in self.cfg["budgets"]}
         if not hasattr(self, "lock"):
             self.lock = threading.Lock()
 
@@ -260,8 +266,10 @@ class Ledger:
         from .plans import billing_for
 
         with self.lock:
-            if not os.path.exists(self.db):
-                raise FileNotFoundError(self.db)
+            if not os.path.exists(self.db):  # nothing recorded yet (a fresh install): no spend, nothing to read
+                if self.last_rowid:
+                    self._reset()
+                return
             c = sqlite3.connect(f"file:{urllib.parse.quote(self.db)}?mode=ro", uri=True, timeout=5)
             try:
                 cols = {r[1] for r in c.execute("PRAGMA table_info(usage)")}
@@ -300,14 +308,26 @@ class Ledger:
                     if not price:
                         for b in hit:
                             self.unpriced[b["id"]] += 1
+                            u = self.unpriced_days[b["id"]]
+                            u[day] = u.get(day, 0) + 1
                 for b in hit:
                     d = self.days[b["id"]]
                     d[day] = d.get(day, 0.0) + amount
 
     def spent(self, budget: dict, today: datetime.date) -> float:
-        start = window_start(budget["period"], budget["since"], today)
-        end = today.isoformat()
+        start, end = window_start(budget["period"], budget["since"], today), _window_end(today)
         return round(sum(v for k, v in self.days[budget["id"]].items() if start <= k <= end), 6)
+
+    def unpriced_in(self, budget: dict, today: datetime.date) -> int:
+        """Calls inside the budget's current window whose model has no price (they count 0 in spent())."""
+        start, end = window_start(budget["period"], budget["since"], today), _window_end(today)
+        return sum(n for k, n in self.unpriced_days[budget["id"]].items() if start <= k <= end)
+
+
+def _window_end(today: datetime.date) -> str:
+    """Last day counted in a window: tomorrow, so rows dated ahead by a clock or time-zone skew (a host in another
+    zone, a UTC timestamp against local time) count now instead of disappearing until the next day."""
+    return (today + datetime.timedelta(days=1)).isoformat()
 
 
 _LEDGERS: dict[tuple, Ledger] = {}
@@ -355,7 +375,8 @@ def _estimate(estimate_usd, input_tokens, output_tokens, model, provider, idx, c
 
 def _judge(b: dict, spent: float, est: float, model: str | None, cur: str) -> Decision:
     lim, after = b["limit"], spent + est
-    base = {"budget_id": b["id"], "spent": round(spent, 6), "limit": lim, "remaining": round(lim - spent, 6), "currency": cur}
+    base = {"budget_id": b["id"], "spent": round(spent, 6), "limit": lim, "remaining": round(lim - spent, 6), "currency": cur,
+            "fail": b["fail"]}
     if after > lim or spent >= lim:
         on = b["on_exceed"]
         if on == "block":
@@ -383,9 +404,7 @@ def check(project, model=None, provider=None, source=None, estimate_usd=0.0, inp
         return cfg
     stale = cfg.get("_stale", "")
     cur = cfg["currency"]
-    from .providers import normalize
-
-    row = {"project": project, "source": source, "provider": normalize(provider) if provider else provider, "model": model}
+    row = attribution(project, model, provider, source)
     hit = [b for b in cfg["budgets"] if matches(b["match"], row)]
     if not hit:
         return Decision(True, "allow", model, currency=cur, reason="no budget applies")
@@ -395,12 +414,54 @@ def check(project, model=None, provider=None, source=None, estimate_usd=0.0, inp
         led = ledger(db, cfg, idx, today)
         est = _estimate(estimate_usd, input_tokens, output_tokens, model, row["provider"], idx, cfg, today)
         decisions = [_judge(b, led.spent(b, today), est, model, cur) for b in hit]
+        unpriced = _unpriced(hit, led, idx, model, row["provider"], today)
     except Exception as e:  # noqa: BLE001 - unreadable spend: apply the fail mode
         return fail_decision(hit, model, cur, f"spend unavailable ({type(e).__name__}){stale}")
+    if unpriced:
+        decisions += unpriced
     d = max(decisions, key=lambda d: (_SEVERITY[d.action], -(d.remaining if d.remaining is not None else 0)))
     if stale:
         d.reason = (d.reason or d.action) + stale
     return d
+
+
+def attribution(project, model=None, provider=None, source=None) -> dict:
+    """The {project, source, provider, model} a call is judged on: the same values its usage row gets when logged
+    (source defaults to $GIUGGIAI_METER_SOURCE, a missing provider comes from the model id)."""
+    from .providers import from_model, normalize
+
+    prov = normalize(provider) if provider else from_model(model)
+    src = os.environ.get("GIUGGIAI_METER_SOURCE") if source is None else source  # "" = explicitly no source
+    return {"project": project, "source": src or None, "provider": prov, "model": model}
+
+
+_UNPRICED_WARNED: set = set()
+
+
+def _unpriced(hit: list[dict], led: Ledger, idx: dict, model, provider, today: datetime.date) -> list[Decision]:
+    """Decisions for spend that cannot be priced: this call's model is not in the price list, or calls inside the
+    window had no price. A fail=closed budget blocks; a fail=open budget allows with a warning (the call is logged
+    and shows up as unpriced in the reports)."""
+    call_unpriced = bool(model) and P.pick(idx, model, today.isoformat(), provider) is None
+    out = []
+    for b in hit:
+        n = led.unpriced_in(b, today)
+        if not (call_unpriced or n):
+            continue
+        what = f"model {model!r} is not in the price list" if call_unpriced else f"{n} call(s) in the window have no price"
+        if call_unpriced and (b["id"], model) not in _UNPRICED_WARNED:
+            _UNPRICED_WARNED.add((b["id"], model))
+            from . import _warn
+
+            _warn(f"[giuggiai_meter] budget {b['id']}: {what}; its spend is not counted (add it to the price list)")
+        base = {"budget_id": b["id"], "spent": led.spent(b, today), "limit": b["limit"], "currency": led.cfg["currency"],
+                "fail": b["fail"]}
+        base["remaining"] = round(b["limit"] - base["spent"], 6)
+        if b["fail"] == "closed":
+            out.append(Decision(False, "block", model, reason=f"budget {b['id']}: {what}; fails closed", **base))
+        else:
+            out.append(Decision(True, "warn", model, reason=f"budget {b['id']}: {what}; spend not counted", **base))
+    return out
 
 
 def _local_config(config, model):
@@ -440,9 +501,9 @@ def fail_decision(hit: list[dict], model, cur: str, why: str) -> Decision:
     closed = [b for b in hit if b["fail"] == "closed"]
     if closed:
         return Decision(False, "block", model, budget_id=closed[0]["id"], limit=closed[0]["limit"], currency=cur,
-                        reason=f"{why}; budget {closed[0]['id']} fails closed")
+                        reason=f"{why}; budget {closed[0]['id']} fails closed", fail="closed")
     return Decision(True, "allow", model, budget_id=hit[0]["id"], limit=hit[0]["limit"], currency=cur,
-                    reason=f"{why}; failing open")
+                    reason=f"{why}; failing open", fail="open")
 
 
 # ---------------------------------------------------------------- remote check (containers, other hosts)
@@ -455,40 +516,106 @@ def _base_url() -> str | None:
     return url.removesuffix("/ingest")
 
 
-def check_remote(project, model=None, provider=None, source=None, estimate_usd=0.0, config=None,
-                 timeout: float = 2.0) -> Decision:
-    """Ask the ingest server ($GIUGGIAI_METER_URL, token $GIUGGIAI_METER_TOKEN) for a decision.
+_REMOTE_FAIL: dict[tuple, tuple] = {}  # (project, source, provider, model) -> (fail mode, budget id) last seen on the server
+_REMOTE_LOCK = threading.Lock()
+_REMOTE_PAUSE_S = 30  # after a network failure the server is not asked again for this long (each check fails fast)
+_remote_down_until = 0.0
+_REMOTE_WARNED: dict[str, float] = {}
 
-    When the server cannot be reached: with a local budgets file, its `fail` modes decide; without one, allow."""
+
+def remote_enabled() -> bool:
+    """True when this process logs to a remote ingest ($GIUGGIAI_METER_URL): its spend lives on that server."""
+    return bool(os.environ.get("GIUGGIAI_METER_URL"))
+
+
+def _warn_every(key: str, msg: str, every_s: float = 60.0) -> None:
+    import time
+
+    from . import _warn
+
+    now = time.monotonic()
+    if now - _REMOTE_WARNED.get(key, -1e9) >= every_s:
+        _REMOTE_WARNED[key] = now
+        _warn(msg)
+
+
+def check_remote(project, model=None, provider=None, source=None, estimate_usd=0.0, config=None,
+                 timeout: float = 2.0, input_tokens=0, output_tokens=0) -> Decision:
+    """Ask the ingest server ($GIUGGIAI_METER_URL, token $GIUGGIAI_METER_TOKEN) for a decision. Never raises.
+
+    The server judges the call on its database, budgets and prices (pass estimate_usd, or input/output tokens and the
+    server prices them). When the server cannot answer (down, timeout, wrong token), the call is never simply let
+    through: the fail mode of the budget the server last applied to this kind of call decides; otherwise a local
+    budgets file (`config`, or the default file) with its fail modes; otherwise $GIUGGIAI_METER_BUDGETS_FAIL
+    ("open" by default, "closed" to block). A wrong token (401/403) is reported on stderr every minute."""
+    global _remote_down_until
+    import time
+    import urllib.error
+
+    row = attribution(project, model, provider, source)
+    key = (row["project"], row["source"], row["provider"], row["model"])
     base, token = _base_url(), os.environ.get("GIUGGIAI_METER_TOKEN", "")
-    q = {"project": project, "model": model, "provider": provider, "source": source, "estimate_usd": estimate_usd}
+    q = {"project": project, "model": model, "provider": row["provider"], "source": row["source"],
+         "estimate_usd": estimate_usd or None, "input_tokens": int(input_tokens or 0) or None,
+         "output_tokens": int(output_tokens or 0) or None}
     try:
         if not base:
             raise RuntimeError("GIUGGIAI_METER_URL not set")
         if not base.lower().startswith(("http://", "https://")):
             raise RuntimeError("GIUGGIAI_METER_URL must be http(s)")
-        from . import _OPENER, _warn
+        if time.monotonic() < _remote_down_until:
+            raise RuntimeError("meter server paused after a failure")
+        from . import _OPENER
 
         host = (urllib.parse.urlsplit(base).hostname or "").lower()
         if base.lower().startswith("http://") and host not in ("localhost", "127.0.0.1", "::1"):
-            _warn("[giuggiai_meter] warning: the meter token is sent over plain http to a remote host; use https")
-
+            _warn_every("http", "[giuggiai_meter] warning: the meter token is sent over plain http to a remote host; "
+                                "use https")
         url = f"{base}/check?" + urllib.parse.urlencode({k: v for k, v in q.items() if v not in (None, "")})
         req = urllib.request.Request(url, headers={"X-Meter-Token": token})
-        with _OPENER.open(req, timeout=timeout) as r:
-            d = json.loads(r.read())
-        return Decision(**{f.name: d.get(f.name) for f in dataclasses.fields(Decision) if f.name in d})
-    except Exception as e:  # noqa: BLE001 - unreachable meter: fail mode
-        why = f"meter unreachable ({type(e).__name__})"
-        cfg = _local_config(config, model)
-        if isinstance(cfg, Decision):  # local budgets unreadable: same rule as check()
-            cfg.reason = f"{why}; {cfg.reason}"
-            return cfg
-        from .providers import normalize
+        try:
+            with _OPENER.open(req, timeout=timeout) as r:
+                d = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                _warn_every("auth", f"[giuggiai_meter] the meter server refused the token (HTTP {e.code}): budgets "
+                                    "cannot be checked; fix GIUGGIAI_METER_TOKEN")
+                raise RuntimeError(f"meter token refused (HTTP {e.code})") from None
+            raise
+        dec = Decision(**{f.name: d.get(f.name) for f in dataclasses.fields(Decision) if f.name in d})
+        if not isinstance(dec.allow, bool) or dec.action not in _SEVERITY:
+            raise ValueError("malformed decision from the meter server")
+        if dec.fail in ("open", "closed"):
+            with _REMOTE_LOCK:
+                if len(_REMOTE_FAIL) > 4096:
+                    _REMOTE_FAIL.clear()
+                _REMOTE_FAIL[key] = (dec.fail, dec.budget_id)
+        return dec
+    except Exception as e:  # noqa: BLE001 - the meter cannot answer: fail mode, never "always allow"
+        if isinstance(e, (OSError, TimeoutError)):  # network down: the next checks fail fast for a while
+            _remote_down_until = time.monotonic() + _REMOTE_PAUSE_S
+        return _remote_fail(e, key, row, config, model)
 
-        row = {"project": project, "source": source, "provider": normalize(provider) if provider else provider,
-               "model": model}
-        hit = [b for b in cfg["budgets"] if matches(b["match"], row)]
-        if hit:
-            return fail_decision(hit, model, cfg["currency"], why)
-        return Decision(True, "allow", model, reason=why)
+
+def _remote_fail(e: Exception, key: tuple, row: dict, config, model) -> Decision:
+    why = f"meter unreachable ({type(e).__name__}: {str(e)[:80]})"
+    seen = _REMOTE_FAIL.get(key)
+    if seen:  # the server told us which budget applies to this call, and its fail mode
+        fail, bid = seen
+        _warn_every("down", f"[giuggiai_meter] {why}; budget {bid} fails {fail}")
+        if fail == "closed":
+            return Decision(False, "block", model, budget_id=bid, reason=f"{why}; budget {bid} fails closed", fail="closed")
+        return Decision(True, "allow", model, budget_id=bid, reason=f"{why}; budget {bid} fails open", fail="open")
+    cfg = _local_config(config, model)
+    if isinstance(cfg, Decision):  # local budgets unreadable: same rule as check()
+        cfg.reason = f"{why}; {cfg.reason}"
+        return cfg
+    hit = [b for b in cfg["budgets"] if matches(b["match"], row)]
+    if hit:
+        return fail_decision(hit, model, cfg["currency"], why)
+    closed = os.environ.get("GIUGGIAI_METER_BUDGETS_FAIL", "open").lower() == "closed"
+    _warn_every("down", f"[giuggiai_meter] {why}; no local budgets: GIUGGIAI_METER_BUDGETS_FAIL="
+                        f"{'closed' if closed else 'open'} decides")
+    if closed:
+        return Decision(False, "block", model, reason=f"{why}; GIUGGIAI_METER_BUDGETS_FAIL=closed", fail="closed")
+    return Decision(True, "allow", model, reason=f"{why}; failing open (GIUGGIAI_METER_BUDGETS_FAIL=open)", fail="open")

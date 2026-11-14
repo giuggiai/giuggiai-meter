@@ -34,7 +34,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 SCHEMA_VERSION = 2
 __all__ = [
     "SCHEMA_VERSION",

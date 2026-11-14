@@ -7,13 +7,13 @@
 - Providers: OpenAI, Azure OpenAI, Anthropic, Google Gemini, xAI Grok, DeepSeek, Alibaba Qwen, Mistral, Cohere, AWS Bedrock, Ollama, Groq, Together, Fireworks, OpenRouter, Perplexity, Moonshot Kimi, Zhipu GLM, and any OpenAI-compatible endpoint.
 - Storage: one local SQLite file, readable by its owner only. Optional HTTP ingest with a shared token for other machines.
 - Commands: `giuggiai-meter demo`, `init`, `report --month YYYY-MM [--csv | --html FILE] [--budgets FILE]`, `reconcile --month YYYY-MM --official Provider=USD ...`, `ingest`, `log`, `status [--json]`, `advise --kind K`, `units`, `plans`, `migrate`.
-- Budgets (0.2): `giuggiai_meter.check(project, model=..., source=...)` returns a Decision (allow, warn, degrade, block); `wrap(client, project=..., budgets=True)` applies it before each call and raises `BudgetExceeded` when blocked. Budgets live in one JSON file (`GIUGGIAI_METER_BUDGETS`). It is a library inside your process, not a proxy.
+- Budgets (0.2): `giuggiai_meter.check(project, model=..., source=...)` returns a Decision (allow, warn, degrade, block); `wrap(client, project=..., budgets=True)` applies it before each call and raises `BudgetExceeded` when blocked. Budgets live in one JSON file (`GIUGGIAI_METER_BUDGETS`). It is a library inside your process, not a proxy. On hosts that log through the ingest server, the check asks that server (0.2.1).
 - Units and outcomes (0.2): `with giuggiai_meter.unit(id, kind):` and `giuggiai_meter.outcome(id, accepted=True)`; `advise` recommends a cheaper model only with at least 20 results per model and at most 5 points lower acceptance.
 - Metering errors never raise into the caller's code.
 - Prices are matched by (provider, model): an entry with a `provider` applies to that provider only, an entry without one applies to every provider.
 
 ## What it does NOT do
-- It does not record streaming calls, batches or embeddings automatically (they can be logged by hand).
+- It does not record batches or embeddings automatically (they can be logged by hand). Streams are recorded when they end (estimated when the provider sends no usage).
 - It does not ship real prices: the bundled price list is an example with placeholder values.
 - It does not route between providers, cache, retry or trace calls (budgets can only switch the model name or refuse a call), and it does not send data anywhere unless the ingest is configured.
 - It is not affiliated with, or endorsed by, any AI provider.

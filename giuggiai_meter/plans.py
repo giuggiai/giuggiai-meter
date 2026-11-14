@@ -3,7 +3,8 @@
 Such calls cost nothing per token, but they still have a list-price value: comparing that value with the monthly fee
 tells you whether the plan pays for itself, and keeps per-token budgets from counting money you never spend.
 
-A call belongs to a plan when it was logged with billing="subscription:<id>", or, when logged without billing,
+A call belongs to a plan when it was logged with billing="subscription:<id>" and <id> is a plan of the budgets file
+(an unknown id counts as "api", with a warning: never silently free), or, when logged without billing,
 when it matches the plan's `match` patterns in the budgets file (same keys as budgets: project, source, provider,
 model). billing="free" counts zero everywhere. Everything else is "api" (paid per token).
 """
@@ -25,13 +26,27 @@ def billing_for(row: dict, plans: list[dict]) -> str:
         if low in ("api", "free"):
             return low
         if low.startswith("subscription:") and len(low) > len("subscription:"):
-            return "subscription:" + str(b).strip().split(":", 1)[1]
+            pid = str(b).strip().split(":", 1)[1]
+            if any(p.get("id") == pid for p in plans or []):
+                return "subscription:" + pid
+            _warn_unknown_plan(pid)  # a typo, or a plan removed from the budgets file: paid per token
         return "api"  # unknown values count as paid per token (never silently free)
     r = row if "project" in row else {**row, "project": row.get("slug")}
     for p in plans or []:
         if p.get("match") and matches(p["match"], r):
             return f"subscription:{p['id']}"
     return "api"
+
+
+_WARNED_PLANS: set[str] = set()
+
+
+def _warn_unknown_plan(pid: str) -> None:
+    if pid not in _WARNED_PLANS:
+        _WARNED_PLANS.add(pid)
+        from . import _warn
+
+        _warn(f"[giuggiai_meter] billing 'subscription:{pid}' names no plan in the budgets file: counted as api")
 
 
 def report(month: str, price_idx: dict, config, db: str | None = None) -> list[dict]:

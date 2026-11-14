@@ -151,7 +151,14 @@ def test_status_cli_without_prices(tmp_path, monkeypatch):
 @pytest.mark.parametrize("value,expected", [("API", "api"), (" free ", "free"), ("Subscription:team", "subscription:team"),
                                             ("whatever", "api"), ("subscription:", "api")])
 def test_billing_values_normalised(value, expected):
-    assert billing_for({"billing": value}, []) == expected
+    assert billing_for({"billing": value}, [{"id": "team", "match": {}}]) == expected
+
+
+def test_billing_subscription_to_an_unknown_plan_is_paid_per_token(capsys):
+    plans = [{"id": "team", "match": {}}]
+    assert billing_for({"billing": "subscription:teem"}, plans) == "api"  # a typo is never silently free
+    assert billing_for({"billing": "subscription:team"}, []) == "api"     # plan removed from the budgets file
+    assert "names no plan" in capsys.readouterr().err
 
 
 def test_unknown_billing_not_stored():

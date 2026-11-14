@@ -129,11 +129,14 @@ def test_wrap_detects_provider():
     assert [(r[0], r[1]) for r in rows()] == [("p1", "OpenAI"), ("p2", "DeepSeek"), ("p3", "Anthropic")]
 
 
-def test_wrap_streaming_passes_through_unrecorded():
+def test_wrap_streaming_without_usage_is_recorded_as_an_estimate():
+    # events pass through unchanged; the stream sends no usage, so the row is an estimate (~4 characters per token)
     client = gm.wrap(Anthropic(), project="p")
     assert list(client.messages.create(model="model-b", stream=True)) == ["event-1", "event-2"]
     assert list(gm.wrap(OpenAI(), project="p").chat.completions.create(model="model-a", stream=True)) == ["chunk"]
-    assert rows() == []
+    assert rows() == [("p", "Anthropic", "model-b", 0, 3, 0), ("p", "OpenAI", "model-a", 0, 1, 0)]
+    with gm.connect() as c:
+        assert all(r[0].startswith("gm-est-") for r in c.execute("SELECT request_id FROM usage"))
 
 
 def test_wrap_logging_error_never_propagates(monkeypatch, capsys):

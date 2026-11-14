@@ -3,7 +3,7 @@ import json
 import threading
 
 import pytest
-from conftest_gov import PRICES, TODAY, cfg, setup_env, spend
+from conftest_gov import PRICES, TODAY, cfg, setup_env, spend, spend_today
 
 import giuggiai_meter as gm
 from giuggiai_meter import forecast as F
@@ -184,7 +184,7 @@ def test_forecast_no_spend():
 
 
 def test_status_cli_json_and_exit(tmp_path, capsys):
-    spend(50)
+    spend_today(50)
     (tmp_path / "budgets.json").write_text(json.dumps(cfg({"id": "b", "limit": 40})))
     assert main(["status", "--json"]) == 2
     out = json.loads(capsys.readouterr().out)

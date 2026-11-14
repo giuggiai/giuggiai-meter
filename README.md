@@ -108,11 +108,12 @@ client.chat.completions.create(model="gpt-large", messages=[...])
 Without wrapping: `d = gm.check("research", model="gpt-large", source="agents/researcher", estimate_usd=0.05)` returns a
 `Decision` (`allow`, `action` = allow | warn | degrade | block, `model` to use, `spent`, `limit`, `remaining`, `reason`).
 `match` takes shell patterns on project, source, provider and model; periods are day, week, month or total (from `since`).
-If the database cannot be read, `fail: open` (default) lets calls through and `fail: closed` stops them: use closed for prepaid credit.
+If the spend cannot be read (a broken or locked database, no price list) or priced (a model missing from the price list), `fail: open` (default) lets calls through with a warning and `fail: closed` stops them: use closed for prepaid credit. A database that does not exist yet means nothing was recorded so far (spend 0).
+A call is judged on the same project, source, provider and model its usage row gets: `source` defaults to `GIUGGIAI_METER_SOURCE`, and a provider not set on the client is taken from the model id.
 A check never writes. The first check of a process reads the rows inside the budget windows once; after that each check reads only the rows added since the previous one (in-memory totals): about half a millisecond. Async clients run the check in a worker thread, off the event loop.
-Streamed calls (`stream=True`) are checked before they start but are not counted afterwards: budgets do not grow with streaming yet.
+Streams (`stream=True`, `.stream(...)`, `*_stream`) and `with_raw_response` / `with_streaming_response` are checked before they start and counted when they end, with the usage the provider sends in the stream (on the official OpenAI API the meter asks for it with `stream_options`), or an estimate when it sends none.
 If the budgets file itself is broken, the last good version read by the process keeps applying; with none, `GIUGGIAI_METER_BUDGETS_FAIL=closed` blocks every call (default: open).
-Containers and other hosts ask the ingest server: `gm.check_remote(...)` (`GET /check`); if the server cannot be reached, only a local copy of the budgets file can apply `fail: closed`. Try it: `python examples/budget_guard.py`.
+On containers and other hosts that log through the ingest (`GIUGGIAI_METER_URL`), `wrap(..., budgets=...)` asks the ingest server (`GET /check`, also `gm.check_remote(...)`): the server's budgets decide. If the server cannot answer, the fail mode of the budget it last applied to that kind of call decides, then a local budgets file, then `GIUGGIAI_METER_BUDGETS_FAIL`; a wrong token is reported on stderr. Try it: `python examples/budget_guard.py`.
 
 ### 2. Plans: subscriptions are not per-token spend
 
@@ -185,7 +186,7 @@ Everything is optional and comes from environment variables (see `.env.example`)
 | `GIUGGIAI_METER_SOURCE` | empty | optional label of the service that logs (the hostname is never recorded) |
 | `GIUGGIAI_METER_BUDGETS` | `~/.config/giuggiai-meter/budgets.json` | budgets and plans (optional) |
 | `GIUGGIAI_METER_UNIT` | — | unit of work for every call of the process (e.g. a job id) |
-| `GIUGGIAI_METER_BUDGETS_FAIL` | `open` | `closed`: block every call while the budgets file cannot be read |
+| `GIUGGIAI_METER_BUDGETS_FAIL` | `open` | `closed`: block every call while no budget can be applied (budgets file unreadable, or the ingest server unreachable with no budget known) |
 | `GIUGGIAI_METER_URL` | — | remote ingest, e.g. `https://meter.example.com/ingest` |
 | `GIUGGIAI_METER_TOKEN` | — | shared ingest token (16+ characters) |
 
@@ -194,12 +195,28 @@ The prices shipped in `examples/` are **placeholders**: copy the real ones from 
 ## FAQ
 
 **Does it see my prompts?** No. It reads only the `usage` block of each response.
-**What if the meter fails?** Your call still returns normally; the error goes to stderr. With budgets, a budget marked `fail: closed` stops calls while its spend cannot be read; every other budget lets them through.
+**What if the meter fails?** Your call still returns normally; the error goes to stderr. With budgets, a budget marked `fail: closed` stops calls while its spend cannot be read or priced; every other budget lets them through, with a warning.
 **Is a budget exact under heavy parallelism?** A check and the call are not atomic: with N calls in flight at the same moment, a budget can be overshot by up to N call estimates.
 **Upgrading from 0.1?** The database gains three columns and a table the first time 0.2 opens it (additive: 0.1 keeps working on it). Run `giuggiai-meter migrate` to do it explicitly.
-**Streaming?** Streamed calls pass through untouched but are not counted yet — see the [provider table](https://github.com/giuggiai/giuggiai-meter/blob/main/docs/providers.md).
+**Streaming?** Streams pass through event by event and are counted when they end (see the [provider table](https://github.com/giuggiai/giuggiai-meter/blob/main/docs/providers.md)); when a provider sends no usage in the stream, the row is an estimate (`request_id` starting with `gm-est-`).
 **Is the cost exact?** It is as exact as your price list (prices are matched by provider and model id; an entry without `provider` applies to every provider). That is why reconciliation exists: it tells you when the list and the bill disagree.
 **Where is the data?** In one SQLite file you own. Nothing is sent anywhere unless you configure the ingest.
+
+## Known limitations
+
+What 0.2.1 does not do yet, so you can plan around it:
+
+- **Costs are list prices.** Long-context price tiers, batch discounts and per-request tool charges (web search and similar) are not modelled; Anthropic cache writes with a 1-hour TTL are priced with the single `cache_write` price. Reconciliation with the bill is where these differences show up.
+- **The monthly report counts subscription calls as cost.** `report` and `reconcile` price every row; use `plans` to see the subscription share (budgets already count those calls 0).
+- **One exchange rate.** `fx` applies to all of history, and a plan in a currency without its own `fx` entry is converted 1:1.
+- **Times are local and without offset.** Rows store the local time of the process that logs them; budget windows tolerate rows dated up to one day ahead (a host in another time zone), not more.
+- **Per-call rounding.** Each call is rounded to 6 decimals of a dollar: calls cheaper than half a micro-dollar count 0.
+- **Estimates.** Streams whose provider sends no usage are recorded from the request size and the streamed text (~4 characters per token); a stream dropped without being read or closed is recorded when Python collects it.
+- **Remote hosts.** A budget check over the ingest costs one HTTP round trip per call (2 s timeout; after a network failure the server is skipped for 30 s and the fail mode applies). Rows a host could not send to the ingest stay in its local database and are not forwarded: the server does not see that spend.
+- **Fresh databases.** A database file that does not exist reads as zero spend, also for `fail: closed`: check `GIUGGIAI_METER_DB` with `giuggiai-meter status` after installing.
+- **Not atomic.** With N calls in flight at once, a budget can be overshot by up to N call estimates.
+- **Not recorded:** batches and embeddings (log them by hand with `gm.log_usage`).
+- **Price lists.** An entry without `effective_from` makes the whole list unreadable (the fail modes apply); `status` exits with 1 both for a warning and for a missing price list.
 
 ## For AI assistants
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "giuggiai-meter"
-version = "0.2.0"
+version = "0.2.1"
 description = "LLM cost control for apps and agents: per-call usage, budgets before the call, subscription plans, cost per accepted result, forecasts and monthly reconciliation"
 readme = "README.md"
 license = "MIT"
