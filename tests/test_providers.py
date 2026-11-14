@@ -201,7 +201,8 @@ def test_wrap_google_genai_sync_async_and_stream():
     assert c.models.generate_content(model="gemini-2.5-flash", contents="hi").response_id == "g-hi"
     asyncio.run(c.aio.models.generate_content(model="gemini-2.5-pro", contents="x"))
     assert list(c.models.generate_content_stream(model="gemini-2.5-flash", contents="s")) == ["part"]
-    assert rows() == [("gem", "Google", "gemini-2.5-flash", 7, 3, 0, 0), ("gem", "Google", "gemini-2.5-pro", 2, 1, 0, 0)]
+    assert rows() == [("gem", "Google", "gemini-2.5-flash", 7, 3, 0, 0), ("gem", "Google", "gemini-2.5-pro", 2, 1, 0, 0),
+                      ("gem", "Google", "gemini-2.5-flash", 4, 1, 0, 0)]  # the stream sent no usage: estimate
 
 
 class Mistral:
@@ -249,14 +250,17 @@ def test_wrap_mistral_cohere_bedrock_ollama():
     gm.wrap(ClientV2(), project="co").chat(model="command-a", messages=[])
     br = gm.wrap(BedrockRuntime(), project="br")
     assert br.converse(modelId="anthropic.claude-x", messages=[])["usage"]["inputTokens"] == 9
-    br.converse_stream(modelId="anthropic.claude-x", messages=[])
+    assert list(br.converse_stream(modelId="anthropic.claude-x", messages=[])["stream"]) == []
     ol = gm.wrap(OllamaClient(), project="ol")
     ol.chat(model="llama3.2", messages=[])
     ol.generate(model="qwen3", prompt="hi")
     assert list(ol.chat(model="llama3.2", messages=[], stream=True)) == ["tok"]
-    assert rows() == [("mi", "Mistral", "mistral-small-latest", 5, 2, 0, 0), ("co", "Cohere", "command-a", 4, 2, 0, 0),
-                      ("br", "AWS Bedrock", "anthropic.claude-x", 9, 3, 0, 0), ("ol", "Ollama", "llama3.2", 6, 8, 0, 0),
-                      ("ol", "Ollama", "qwen3", 1, 2, 0, 0)]
+    # streams without usage in their events are recorded as estimates (request body and streamed text / 4)
+    assert rows() == [("mi", "Mistral", "mistral-small-latest", 5, 2, 0, 0), ("mi", "Mistral", "m", 0, 0, 0, 0),
+                      ("co", "Cohere", "command-a", 4, 2, 0, 0),
+                      ("br", "AWS Bedrock", "anthropic.claude-x", 9, 3, 0, 0),
+                      ("br", "AWS Bedrock", "anthropic.claude-x", 4, 0, 0, 0), ("ol", "Ollama", "llama3.2", 6, 8, 0, 0),
+                      ("ol", "Ollama", "qwen3", 1, 2, 0, 0), ("ol", "Ollama", "llama3.2", 4, 0, 0, 0)]
 
 
 def test_wrap_module_like_ollama():
