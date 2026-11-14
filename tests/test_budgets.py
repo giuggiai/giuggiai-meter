@@ -7,7 +7,7 @@ from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
-from conftest_gov import TODAY, cfg, setup_env, spend
+from conftest_gov import TODAY, cfg, setup_env, spend, spend_today
 
 import giuggiai_meter as gm
 from giuggiai_meter import budgets as B
@@ -247,7 +247,7 @@ class FakeOpenAI:
 
 
 def test_wrap_block_raises_before_call():
-    spend(6)
+    spend_today(6)
     fake = FakeOpenAI()
     client = gm.wrap(fake, project="p", budgets=cfg({"id": "b", "limit": 5}))
     with pytest.raises(gm.BudgetExceeded) as e:
@@ -256,7 +256,7 @@ def test_wrap_block_raises_before_call():
 
 
 def test_wrap_degrade_rewrites_model():
-    spend(6)
+    spend_today(6)
     fake = FakeOpenAI()
     c = cfg({"id": "b", "limit": 5, "on_exceed": "degrade", "degrade_to": "small"})
     gm.wrap(fake, project="p", budgets=c).chat.completions.create(model="big", messages=[])
@@ -326,7 +326,7 @@ def test_remote_unreachable_fail_modes(monkeypatch):
 
 
 def test_async_wrap_block():
-    spend(6)
+    spend_today(6)
 
     class AsyncFake(FakeOpenAI):
         async def _acreate(self, **kw):
